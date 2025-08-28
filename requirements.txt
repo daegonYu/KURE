@@ -1,0 +1,11 @@
+beautifulsoup4==4.13.3
+blinker==1.4
+charset-normalizer==3.4.1
+mteb
+pandas==2.3.2
+tornado==6.4.2
+transformers==4.55.4
+sentence-transformers
+python-dotenv
+streamlit
+setproctitle

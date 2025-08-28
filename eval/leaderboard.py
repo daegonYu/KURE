@@ -16,7 +16,7 @@ def app():
         "PublicHealthQA",
         "BelebeleRetrieval",
         "MrTidyRetrieval",
-        "MultiLongDocRetrieval",
+        # "MultiLongDocRetrieval",
         "XPQARetrieval"
     ]
     top_k_types = ["top1", "top3", "top5", "top10"]
@@ -34,40 +34,46 @@ def app():
 
     root_dir = "results"
 
-    # 데이터가 저장되어 있는 디렉토리의 모든 하위 폴더를 순회하면서 json 파일을 읽습니다.
     for subdir, dirs, files in os.walk(root_dir):
         for file in files:
             for task in tasks:
                 if file == task + ".json":
-                    with open(os.path.join(subdir, file)) as f:
-                        d = json.load(f)
-                        for top_k in top_k_types:
-                            results = {}
-                            for score in score_types[top_k]:
-                                if "dev" in d["scores"] and "test" not in d["scores"]:
-                                    results[score] = d["scores"]["dev"][0][score]
-                                elif "test" in d["scores"] and "dev" not in d["scores"]:
-                                    results[score] = d["scores"]["test"][0][score]
-                                else:
-                                    # dev, test를 모두 가지고 있는 평가 데이터셋을 위함
-                                    results[score] = (d["scores"]["dev"][0][score] + d["scores"]["test"][0][score]) / 2
+                    file_path = os.path.join(subdir, file)
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            d = json.load(f)
+                    except json.JSONDecodeError as e:
+                        st.warning(f"❗ JSONDecodeError in file {file_path}: {e}")
+                        continue  # 오류가 난 파일은 건너뜀
 
-                            # f1 score 직접 계산
-                            f1_score = (
-                                2 * (results[score_types[top_k][1]] * results[score_types[top_k][0]]) / (results[score_types[top_k][1]]+ results[score_types[top_k][0]])
-                                if (results[score_types[top_k][1]]+ results[score_types[top_k][0]])> 0
-                                else 0
-                            )
+                    for top_k in top_k_types:
+                        results = {}
+                        for score in score_types[top_k]:
+                            if "dev" in d["scores"] and "test" not in d["scores"]:
+                                results[score] = d["scores"]["dev"][0][score]
+                            elif "test" in d["scores"] and "dev" not in d["scores"]:
+                                results[score] = d["scores"]["test"][0][score]
+                            else:
+                                results[score] = (
+                                    d["scores"]["dev"][0][score] + d["scores"]["test"][0][score]
+                                ) / 2
 
-                            data[task][top_k].append(
-                                (
-                                    os.path.relpath(subdir, root_dir),
-                                    results[score_types[top_k][0]],
-                                    results[score_types[top_k][1]],
-                                    results[score_types[top_k][2]],
-                                    f1_score,
-                                )
+                        f1_score = (
+                            2 * (results[score_types[top_k][1]] * results[score_types[top_k][0]])
+                            / (results[score_types[top_k][1]] + results[score_types[top_k][0]])
+                            if (results[score_types[top_k][1]] + results[score_types[top_k][0]]) > 0
+                            else 0
+                        )
+
+                        data[task][top_k].append(
+                            (
+                                os.path.relpath(subdir, root_dir),
+                                results[score_types[top_k][0]],
+                                results[score_types[top_k][1]],
+                                results[score_types[top_k][2]],
+                                f1_score,
                             )
+                        )
 
     # 각 작업에 대해 top1, top3, top5, top10 점수 표시
     for task in tasks:
