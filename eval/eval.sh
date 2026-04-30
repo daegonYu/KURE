@@ -1,6 +1,68 @@
 #!/bin/bash
+# Run MTEB evaluation in tmux. Models and tasks are managed in this script.
+#
+# Usage:
+#   ./eval.sh [CUDA_NUM] [PROFILE]
+#     CUDA_NUM: GPU id to bind (default: 3). Ignored for upstage profile.
+#     PROFILE : which model/task bundle to run.
+#               - default : Korean retrieval models on LawIRKo + SQuADKorV1Retrieval
+#               - upstage : Upstage Solar embedding API on the 9 Korean retrieval tasks
+#
+# Examples:
+#   ./eval.sh 0 default
+#   ./eval.sh 0 upstage
+#
+# All output is piped to eval.log in this directory.
 
 set -e
 
-cd /workspace/gits/KURE/eval
-nohup python evaluate.py > eval.log 2>&1
+CUDA_NUM=${1:-3}
+PROFILE=${2:-default}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
+
+# ---------------------------------------------------------------------------
+# Profiles: (MODELS, TASKS)
+# ---------------------------------------------------------------------------
+case "${PROFILE}" in
+  default)
+    MODELS="nlpai-lab/KURE-v1,\
+BAAI/bge-m3,\
+Snowflake/snowflake-arctic-embed-l-v2.0,\
+intfloat/multilingual-e5-large,\
+nlpai-lab/KoE5,\
+BAAI/bge-multilingual-gemma2,\
+jinaai/jina-embeddings-v3,\
+SamilPwC-AXNode-GenAI/PwC-Embedding_expr,\
+dragonkue/snowflake-arctic-embed-l-v2.0-ko"
+    TASKS="LawIRKo,SQuADKorV1Retrieval"
+    ;;
+  upstage)
+    MODELS="upstage/solar-embedding-1-large"
+    TASKS="MrTidyRetrieval,MIRACLRetrieval,XPQARetrieval,BelebeleRetrieval,PublicHealthQA,AutoRAGRetrieval,Ko-StrategyQA,LawIRKo,SQuADKorV1Retrieval"
+    ;;
+  *)
+    echo "Unknown profile: ${PROFILE}. Available: default, upstage" >&2
+    exit 1
+    ;;
+esac
+
+LOG="eval_${PROFILE}.log"
+echo "Profile : ${PROFILE}"
+echo "Models  : ${MODELS//,/ , }"
+echo "Tasks   : ${TASKS}"
+echo "GPU     : ${CUDA_NUM} (ignored for upstage)"
+echo "Log     : ${LOG}"
+echo
+
+# Upstage hits an API and does not need a GPU; we still set the env for
+# logging consistency.
+CUDA_VISIBLE_DEVICES=${CUDA_NUM} nohup uv run evaluate.py \
+  --models "${MODELS}" \
+  --tasks "${TASKS}" \
+  --gpu ${CUDA_NUM} \
+  > "${LOG}" 2>&1 &
+
+echo "Process started in background (PID $!). Tail logs with: tail -f ${LOG}"
+echo "GPU usage: nvidia-smi"

@@ -1,0 +1,29 @@
+[project]
+name = "kure-eval"
+version = "0.1.0"
+description = "KURE evaluation environment"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.13.3",
+    "blinker>=1.4",
+    "charset-normalizer>=3.4.1",
+    "mteb>=2.12.30",
+    "pandas>=2.3.2",
+    "tornado>=6.4.2",
+    "transformers>=4.55.4",
+    "sentence-transformers>=5.0.0",
+    "python-dotenv",
+    "streamlit",
+    "setproctitle",
+    "torch>=2.9.0",
+    "requests",
+    "tqdm",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }

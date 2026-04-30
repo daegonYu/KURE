@@ -1,2 +1,7 @@
 __pycache__
 ex.ipynb
+.env
+.venv/
+.claude/
+.ipynb_checkpoints/
+*.log

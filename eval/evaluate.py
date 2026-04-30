@@ -1,266 +1,468 @@
-"""Benchmarking all datasets constituting the MTEB Korean leaderboard & average scores"""
+"""Benchmark embedding models on MTEB Korean retrieval tasks.
+
+Usage:
+    uv run evaluate.py \
+        --models nlpai-lab/KURE-v1,BAAI/bge-m3 \
+        --tasks LawIRKo,SQuADKorV1Retrieval \
+        --gpu 3
+
+Models and tasks are passed as comma-separated lists. Upstage API models are
+specified as `upstage/solar-embedding-1-large` and require UPSTAGE_API_KEY in .env.
+"""
 from __future__ import annotations
 
-import os
+import argparse
 import logging
-from multiprocessing import Process, current_process, Pool
+import os
+from multiprocessing import Pool, current_process
+from typing import Any
+
+import numpy as np
+import requests
 import torch
 import torch.multiprocessing as mp
-
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.models import StaticEmbedding
+from dotenv import load_dotenv
+from setproctitle import setproctitle
 
 import mteb
 from mteb import MTEB, get_tasks
-from mteb.encoder_interface import PromptType
-from mteb.models.sentence_transformer_wrapper import SentenceTransformerWrapper
+from mteb.models import ModelMeta
+from mteb.models.abs_encoder import AbsEncoder
 from mteb.models.instruct_wrapper import instruct_wrapper
+from mteb.models.model_meta import ScoringFunction
+from mteb.models.sentence_transformer_wrapper import SentenceTransformerEncoderWrapper
+from mteb.types import PromptType
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.models import StaticEmbedding
 
-import argparse
-from dotenv import load_dotenv
-from setproctitle import setproctitle
-import traceback
-import logging
-
-load_dotenv() # for OPENAI
-
-parser = argparse.ArgumentParser(description="Extract contexts")
-parser.add_argument('--quantize', default=False, type=bool, help='quantize embeddings')
-args = parser.parse_args()
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
-
 logger = logging.getLogger("main")
 
-TASK_LIST_CLASSIFICATION = []
 
-TASK_LIST_CLUSTERING = []
+# ---------------------------------------------------------------------------
+# Upstage Solar embedding API encoder
+# ---------------------------------------------------------------------------
+UPSTAGE_API_URL = "https://api.upstage.ai/v1/solar/embeddings"
+UPSTAGE_QUERY_MODEL = "solar-embedding-1-large-query"
+UPSTAGE_PASSAGE_MODEL = "solar-embedding-1-large-passage"
 
-TASK_LIST_PAIR_CLASSIFICATION = []
 
-TASK_LIST_RERANKING = []
+class UpstageSolarEncoder(AbsEncoder):
+    """Encoder calling Upstage Solar embeddings API.
 
-TASK_LIST_RETRIEVAL = [
-    "Ko-StrategyQA",
-    "AutoRAGRetrieval",
-    "MIRACLRetrieval", # 시간이 오래 걸림 주의
-    "PublicHealthQA",
-    "BelebeleRetrieval",
-    "MrTidyRetrieval", # 시간이 오래 걸림 주의
-    "MultiLongDocRetrieval",
-    "XPQARetrieval",
-    # "Tatoeba"
-]
+    Routes by prompt_type: query texts use the `-query` model and document texts
+    use the `-passage` model. Embedding dim is 4096, similarity is cosine.
+    """
 
-TASK_LIST_STS = []
+    # Upstage limits per request (per console docs):
+    #   - max 100 texts per request
+    #   - max 204,800 total tokens per request
+    #   - solar-embedding-1-large context window ≈ 4,000 tokens
+    # We use char-level proxies for tokens (Korean ≈ 1 char/token,
+    # Latin scripts ≈ 4 chars/token) and stay well below limits.
+    DEFAULT_MAX_CHARS_PER_TEXT = 8000  # ≈ 4k Korean tokens (safety margin)
+    DEFAULT_MAX_CHARS_PER_BATCH = 100_000  # ≈ 100k Korean tokens / 400k Latin
+    DEFAULT_MAX_TEXTS_PER_BATCH = 100
 
-TASK_LIST = (
-    TASK_LIST_CLASSIFICATION
-    + TASK_LIST_CLUSTERING
-    + TASK_LIST_PAIR_CLASSIFICATION
-    + TASK_LIST_RERANKING
-    + TASK_LIST_RETRIEVAL
-    + TASK_LIST_STS
-)
+    def __init__(
+        self,
+        model_name: str = "upstage/solar-embedding-1-large",
+        revision: str | None = None,
+        *,
+        device: str | None = None,
+        api_key: str | None = None,
+        max_texts_per_batch: int = DEFAULT_MAX_TEXTS_PER_BATCH,
+        max_chars_per_batch: int = DEFAULT_MAX_CHARS_PER_BATCH,
+        max_chars_per_text: int = DEFAULT_MAX_CHARS_PER_TEXT,
+        timeout: int = 120,
+        max_retries: int = 5,
+        **kwargs: Any,
+    ) -> None:
+        api_key = (
+            api_key
+            or os.environ.get("UPSTAGE_API_KEY")
+            or os.environ.get("UPSTAGE_API")
+        )
+        if not api_key:
+            raise RuntimeError(
+                "UPSTAGE_API_KEY (or UPSTAGE_API) is not set. "
+                "Add it to .env to evaluate Upstage models."
+            )
+        self.api_key = api_key
+        self.max_texts_per_batch = max_texts_per_batch
+        self.max_chars_per_batch = max_chars_per_batch
+        self.max_chars_per_text = max_chars_per_text
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+        )
+        self.mteb_model_meta = ModelMeta.create_empty(
+            overwrites=dict(
+                name=model_name,
+                revision=revision or "no_revision_available",
+                languages=["kor-Hang", "eng-Latn"],
+                max_tokens=4000,
+                embed_dim=4096,
+                framework=["API"],
+                similarity_fn_name=ScoringFunction.COSINE,
+                use_instructions=False,
+                open_weights=False,
+                license="not specified",
+                reference="https://console.upstage.ai/docs/capabilities/embeddings",
+            )
+        )
 
-# MIRACL, MrTidy는 평가 시 시간이 오래 걸리기 때문에, 태스크별로 나누어 multiprocessing으로 평가합니다.
-# 필요 시 GPU 번호를 다르게 조정해 주세요.
-TASK_LIST_RETRIEVAL_GPU_MAPPING = {
-    0: [
-        "Ko-StrategyQA",
-        "AutoRAGRetrieval",
-        "PublicHealthQA",
-        "BelebeleRetrieval",
-        "XPQARetrieval",
-        # "MultiLongDocRetrieval",
-        "MIRACLRetrieval",
-        "MrTidyRetrieval"
-    ]
-}
+    @staticmethod
+    def _safe_text(t: str | None) -> str:
+        # Upstage rejects empty inputs; mteb may pass empty docs from corpora.
+        return t if t else " "
 
-model_names = [
-    # my_model_directory
-    # '/workspace/gits/FlagEmbedding/models/BGE_M3_triple_mixed_ko_v1',
-    # '/workspace/gits/FlagEmbedding/models/KURE_Snowflake_Arctic_Embedder_ko_v1',
-    # '/workspace/gits/FlagEmbedding/models/KURE_Snowflake_Arctic_Embedder_ko_v2',
-    # '/workspace/gits/FlagEmbedding/models/BGE_ko_Snowflake_Arctic_Embedder_ko_v2',
-    # '/workspace/script/llm_pruning/models/sentence-transformer-kanana-1.5-2.1b-instruct-2505',
-    # '/workspace/script/llm_pruning/models/sentence-transformer-kanana-1.5-2.1b-instruct-2505-pruning-v1',
-    # '/workspace/script/llm_pruning/models/sentence-transformer-kanana-1.5-2.1b-instruct-2505-pruning-v3',
-    # '/workspace/gits/FlagEmbedding/models/KURE_Snowflake_Arctic_Embedder_ko_v2_slerp',
-    # '/workspace/gits/FlagEmbedding/models/BGE_M3_Snowflake_Arctic_Embedder_ko_v1',
-    # '/workspace/gits/FlagEmbedding/models/BGE_M3_Snowflake_Arctic_Embedder_ko_v2',
-    # '/workspace/gits/FlagEmbedding/models/BGE_M3_Snowflake_Arctic_Embedder_ko_v2_slerp',
-    # '/workspace/gits/FlagEmbedding/models/BGE_M3_Snowflake_Arctic_Embedder_ko_v3',
-    # '/workspace/gits/FlagEmbedding/models/BGE_M3_Snowflake_Arctic_Embedder_ko_v3_slerp',
-    # '/workspace/gits/FlagEmbedding/models/e5_small_mixed_ko_v1',
-    # '/workspace/gits/FlagEmbedding/models/e5_small_mixed_ko_v2',
-    # '/workspace/gits/FlagEmbedding/models/e5_small_mixed_ko_v3',
-    # '/workspace/script/llm_pruning/models/sentence-transformer-naver-hyperclovax/HyperCLOVAX-SEED-Text-Instruct-0.5B',
-    # '/workspace/script/llm_pruning/models/sentence-transformer-naver-hyperclovax/HyperCLOVAX-SEED-Text-Instruct-1.5B'
-]
-model_names = [
-    # "Salesforce/SFR-Embedding-2_R", # 4096
-    # "Alibaba-NLP/gte-Qwen2-7B-instruct", # 8192
-    # "BAAI/bge-multilingual-gemma2", # 8192
-    # "intfloat/e5-mistral-7b-instruct", # 32768
-    # "intfloat/multilingual-e5-large-instruct", # 512
-    # "openai/text-embedding-3-large", # 8191
-    # "Alibaba-NLP/gte-multilingual-base", 
-    # "intfloat/multilingual-e5-small", # 512
-    # "intfloat/multilingual-e5-base", # 512
-    # "intfloat/multilingual-e5-large", # 512
-    # "jinaai/jina-embeddings-v3", # 8192
-    # "jhgan/ko-sroberta-multitask", # 128
-    # "BAAI/bge-m3", # 8192
-    # "nlpai-lab/KoE5", # 512
-    # "dragonkue/BGE-m3-ko", # 8192
-    # "Snowflake/snowflake-arctic-embed-l-v2.0", # 8192,
-    # "nlpai-lab/KURE-v1", # 8192,
-    # "nomic-ai/nomic-embed-text-v2-moe",
-    # 'ibm-granite/granite-embedding-278m-multilingual',
-    # 'ibm-granite/granite-embedding-107m-multilingual',
-    # 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2',
-    # 'dragonkue/multilingual-e5-small-ko',
-    # 'exp-models/dragonkue-KoEn-E5-Tiny',
-    # 'Snowflake/snowflake-arctic-embed-m-v2.0'
-    # 'telepix/PIXIE-Rune-Preview',
-    # 'Qwen/Qwen3-Embedding-0.6B'
-    "SamilPwC-AXNode-GenAI/PwC-Embedding_expr"
+    def _truncate(self, text: str) -> str:
+        text = self._safe_text(text)
+        if len(text) > self.max_chars_per_text:
+            return text[: self.max_chars_per_text]
+        return text
 
-] + model_names
+    def _pack_batches(self, texts: list[str]) -> list[list[int]]:
+        """Group text indices into batches respecting both count and char-budget limits."""
+        batches: list[list[int]] = []
+        cur: list[int] = []
+        cur_chars = 0
+        for i, t in enumerate(texts):
+            n = len(t)
+            if cur and (
+                len(cur) >= self.max_texts_per_batch
+                or cur_chars + n > self.max_chars_per_batch
+            ):
+                batches.append(cur)
+                cur, cur_chars = [], 0
+            cur.append(i)
+            cur_chars += n
+        if cur:
+            batches.append(cur)
+        return batches
 
-def evaluate_model(model_name, gpu_id, tasks):
-    # Set the environment variable for the specific GPU
-    if gpu_id >= torch.cuda.device_count():
-        print(f"⚠️ Warning: GPU {gpu_id} is not available. Using GPU 0 instead.")
-        gpu_id = 0  # 기본값으로 0번 GPU 사용
+    def _post_with_retries(self, payload: dict) -> dict:
+        backoff = 1.0
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                r = self.session.post(
+                    UPSTAGE_API_URL, json=payload, timeout=self.timeout
+                )
+                # 4xx other than 429 are not transient -- surface immediately.
+                if r.status_code == 400:
+                    r.raise_for_status()  # raises HTTPError caller will catch
+                r.raise_for_status()
+                return r.json()
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                # 400 is a payload error; do not retry, propagate to splitter.
+                if status == 400:
+                    raise
+                last_exc = exc
+            except Exception as exc:  # noqa: BLE001 -- network errors etc.
+                last_exc = exc
+            if attempt == self.max_retries - 1:
+                break
+            logger.warning(
+                f"Upstage API error (attempt {attempt + 1}/{self.max_retries}): "
+                f"{last_exc}. Retrying in {backoff:.1f}s..."
+            )
+            import time
 
-    torch.cuda.set_device(gpu_id)
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    
-    model = None
-    if "m2v" in model_name: # model2vec의 경우: 모델명에 m2v를 포함시켜주어야 model2vec 모델로 인식합니다.
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+        assert last_exc is not None
+        raise last_exc
+
+    def _embed_chunk(self, chunk: list[str], upstream_model: str) -> list[list[float]]:
+        """Embed a chunk; on HTTP 400 split-and-retry recursively."""
+        try:
+            data = self._post_with_retries({"input": chunk, "model": upstream_model})
+            embs = sorted(data["data"], key=lambda x: x["index"])
+            return [e["embedding"] for e in embs]
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 400:
+                if len(chunk) == 1:
+                    # Last resort: aggressively truncate the single offender.
+                    short = chunk[0][: max(self.max_chars_per_text // 4, 500)]
+                    if len(short) < len(chunk[0]):
+                        logger.warning(
+                            f"[Upstage] 400 on single text len={len(chunk[0])}. "
+                            f"Aggressively truncating to len={len(short)} and retrying."
+                        )
+                        data = self._post_with_retries(
+                            {"input": [short], "model": upstream_model}
+                        )
+                        embs = sorted(data["data"], key=lambda x: x["index"])
+                        return [e["embedding"] for e in embs]
+                    body = exc.response.text[:300] if exc.response is not None else ""
+                    logger.error(
+                        f"[Upstage] 400 on minimal text (len={len(chunk[0])}): {body}"
+                    )
+                    raise
+                # Split in half and recurse.
+                mid = len(chunk) // 2
+                logger.warning(
+                    f"[Upstage] 400 on batch of {len(chunk)} texts. Splitting to "
+                    f"{mid}+{len(chunk) - mid} and retrying."
+                )
+                return self._embed_chunk(chunk[:mid], upstream_model) + self._embed_chunk(
+                    chunk[mid:], upstream_model
+                )
+            raise
+
+    def _embed(self, texts: list[str], upstream_model: str) -> np.ndarray:
+        truncated = [self._truncate(t) for t in texts]
+        batches = self._pack_batches(truncated)
+        out: list[list[float]] = [None] * len(truncated)  # type: ignore[list-item]
+        for indices in batches:
+            chunk = [truncated[i] for i in indices]
+            embs = self._embed_chunk(chunk, upstream_model)
+            for j, idx in enumerate(indices):
+                out[idx] = embs[j]
+        return np.asarray(out, dtype=np.float32)
+
+    def encode(
+        self,
+        inputs,
+        *,
+        task_metadata=None,
+        hf_split=None,
+        hf_subset=None,
+        prompt_type: PromptType | None = None,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        upstream_model = (
+            UPSTAGE_QUERY_MODEL if prompt_type == PromptType.query else UPSTAGE_PASSAGE_MODEL
+        )
+        texts: list[str] = []
+        for batch in inputs:
+            if isinstance(batch, dict) and "text" in batch:
+                texts.extend(batch["text"])
+            else:
+                texts.extend(batch)
+        logger.info(
+            f"[Upstage] task={getattr(task_metadata, 'name', None)} "
+            f"prompt_type={prompt_type} model={upstream_model} n={len(texts)}"
+        )
+        return self._embed(texts, upstream_model)
+
+
+# ---------------------------------------------------------------------------
+# Per-model loader: rely on each model's built-in prompts when available
+# ---------------------------------------------------------------------------
+def build_model(model_name: str):
+    """Return an MTEB-compatible encoder for the given model id.
+
+    Models with built-in `prompts` (set in their config_sentence_transformers.json)
+    are loaded as-is — `model_prompts=None` lets mteb's wrapper pick up those
+    built-in prompts automatically. For models that need explicit overrides
+    (instruction-tuned LLMs, gemma2 instruct), apply targeted handling.
+    """
+    name_lower = model_name.lower()
+
+    # upstage API models
+    if name_lower.startswith("upstage/"):
+        logger.info(f"Loading Upstage API encoder: {model_name}")
+        return UpstageSolarEncoder(model_name=model_name)
+
+    # model2vec static embeddings
+    if "m2v" in name_lower:
+        logger.info(f"Loading model2vec model: {model_name}")
         static_embedding = StaticEmbedding.from_model2vec(model_name)
-        model = SentenceTransformer(modules=[static_embedding], model_kwargs={"attn_implementation": "sdpa"})
-    
-    elif model_name == "nlpai-lab/KoE5" or model_name == "KU-HIAI-ONTHEIT/ontheit-large-v1_1"  or 'e5' in model_name.lower() or 'intfloat' in model_name:
-        print('-'*20)
-        print('mE5 종류입니다.')
-        print('-'*20)
-        # mE5 기반의 모델이므로, 해당 프롬프트를 추가시킵니다.
-        model_prompts = {
-            PromptType.query.value: "query: ",
-            PromptType.passage.value: "passage: ",
-        }
-        model = SentenceTransformerWrapper(model=model_name, model_prompts=model_prompts, model_kwargs={"attn_implementation": "sdpa"})
-    
-    elif model_name == "nomic-ai/nomic-embed-text-v2-moe":
-        model_prompts = {
-            PromptType.query.value: "search_query: ",
-            PromptType.passage.value: "search_document: ",
-        }
-        model = SentenceTransformerWrapper(model=model_name, model_prompts=model_prompts, model_kwargs={"attn_implementation": "sdpa"}, trust_remote_code=True)
-    
-    elif model_name == "BAAI/bge-multilingual-gemma2":
-            # mbge-gemma2의 경우, mteb에서 지원하지 않습니다. 따라서, instruct_wrapper를 사용합니다.
-        instruction_template = '<instruct>{instruction}\n<query>'
-        model = instruct_wrapper(
-                model_name_or_path=model_name,
-                instruction_template=instruction_template,
-                attn="cccc",
-                pooling_method="lasttoken",
-                mode="embedding",
-                torch_dtype=torch.float16,
-                normalized=True,
+        st_model = SentenceTransformer(
+            modules=[static_embedding],
+            model_kwargs={"attn_implementation": "sdpa"},
         )
-    elif "snowflake" in model_name.lower() or 'telepix/PIXIE-Rune-Preview' == model_name:
-        print('-'*20)
-        print('snowflake 종류입니다.')
-        print('-'*20)
-        print(f"model_name: {model_name}")
-        # mteb에서 Snowflake 모델을 지원하지 않으므로, Snowflake에서 사용하는 "query: " prefix를 임의로 추가합니다.
-        model_prompts = {
-            PromptType.query.value: "query: ",
-        }
-        model = SentenceTransformerWrapper(model=model_name, model_prompts=model_prompts, model_kwargs={"attn_implementation": "sdpa"}, trust_remote_code=True)
+        return SentenceTransformerEncoderWrapper(model=st_model)
 
-    elif 'kanana' in model_name.lower():
-        print('-'*20)
-        print('kanana 종류입니다.')
-        print('-'*20)
-        print(f"model_name: {model_name}")
-        model_prompts = {
-            PromptType.query.value: "다음은 사용자의 검색 질문입니다. 질문에 답할 수 있는 문서를 찾아주세요.\n질문:",
-            # PromptType.passage.value: "passage: ",
-        }
-        model = SentenceTransformerWrapper(model=model_name, model_prompts=model_prompts, model_kwargs={"attn_implementation": "sdpa"}, trust_remote_code=True)
-    
-    elif 'qwen' in model_name.lower() or 'SamilPwC-AXNode-GenAI/PwC-Embedding_expr' == model_name:
-        print('-'*20)
-        print('Qwen 종류입니다.')
-        print('-'*20)
-        print(f"model_name: {model_name}")
-        task_description = 'Given a web search query, retrieve relevant passages that answer the query'
-        model_prompts = {
-            PromptType.query.value: f'Instruct: {task_description}\nQuery:',
-            # PromptType.passage.value: "",
-        }
-        model = SentenceTransformerWrapper(model=model_name, model_prompts=model_prompts, model_kwargs={"attn_implementation": "sdpa"}, trust_remote_code=True)
-        model.max_seq_length = 8192
-
-    else:
-        print('-'*20)
-        print('BGE 종류입니다.')
-        print('-'*20)
-        print(f"model_name: {model_name}")
-        model_prompts = {
-            PromptType.query.value: "",
-            PromptType.passage.value: "",
-        }
-        model = SentenceTransformerWrapper(model=model_name, model_prompts=model_prompts, model_kwargs={"attn_implementation": "sdpa"})
-
-    if 'SamilPwC-AXNode-GenAI/PwC-Embedding_expr' == model_name:
-        model.max_seq_length = 512
-
-    if model:
-        setproctitle(f"{model_name}-{gpu_id}")
-        print(f"Running tasks: {tasks} / {model_name} on GPU {gpu_id} in process {current_process().name}")
-        evaluation = MTEB(
-            tasks=get_tasks(tasks=tasks, languages=["kor-Kore", "kor-Hang", "kor_Hang"])
+    # gemma2 instruct: needs custom instruct wrapper
+    if model_name == "BAAI/bge-multilingual-gemma2":
+        logger.info(f"Loading instruct wrapper for: {model_name}")
+        instruction_template = "<instruct>{instruction}\n<query>"
+        return instruct_wrapper(
+            model_name_or_path=model_name,
+            mode="embedding",
+            instruction_template=instruction_template,
+            attn="cccc",
+            pooling_method="lasttoken",
+            torch_dtype=torch.float16,
+            normalized=True,
         )
-        # 48GB VRAM 기준 적합한 batch sizes
-        if "multilingual-e5" in model_name or "KoE5" in model_name or "ontheit" in model_name or "nomic" in model_name or 'me5' in model_name or 'pwc' in model_name.lower():
-            batch_size = 2400 // 2
-        elif "jina" in model_name:
-            batch_size = 8
-        elif "bge-m3" in model_name.lower() or "Snowflake" in model_name:
-            batch_size = 32
-        elif "gemma2" in model_name:
-            batch_size = 256 
-        elif "Salesforce" in model_name:
-            batch_size = 128
-        else:
-            batch_size = 64
 
-        print(f"batch_size:{batch_size}")
-
-        if args.quantize: # quantized model의 경우
-            evaluation.run(
-                model,
-                output_folder=f"results/{model_name}-quantized",
-                encode_kwargs={"batch_size": batch_size, "precision": "binary"},
-            )
+    # qwen3-embedding / PwC: explicit instruct prefix on queries only
+    if "qwen" in name_lower or model_name == "SamilPwC-AXNode-GenAI/PwC-Embedding_expr":
+        logger.info(f"Loading instruct-prefix model: {model_name}")
+        task_description = (
+            "Given a web search query, retrieve relevant passages that answer the query"
+        )
+        model_prompts = {"query": f"Instruct: {task_description}\nQuery:"}
+        wrapper = SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa"},
+            trust_remote_code=True,
+        )
+        if model_name == "SamilPwC-AXNode-GenAI/PwC-Embedding_expr":
+            wrapper.model.max_seq_length = 512
         else:
-            evaluation.run(
-                model,
-                output_folder=f"results/{model_name}",
-                encode_kwargs={"batch_size": batch_size},
-            )
+            wrapper.model.max_seq_length = 8192
+        return wrapper
+
+    # e5 family (multilingual-e5-*, KoE5, etc.) -- their HF configs ship with
+    # empty `prompts`, but the models were trained with `query: ` / `passage: `
+    # prefixes. We must inject these explicitly.
+    if (
+        model_name in {"nlpai-lab/KoE5", "KU-HIAI-ONTHEIT/ontheit-large-v1_1"}
+        or "e5" in name_lower
+        or "intfloat" in name_lower
+    ):
+        logger.info(f"Loading e5-family model with query/passage prefixes: {model_name}")
+        model_prompts = {"query": "query: ", "document": "passage: "}
+        return SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa"},
+        )
+
+    # nomic-embed-v2-moe ships with `search_query:` / `search_document:` prefixes.
+    if model_name == "nomic-ai/nomic-embed-text-v2-moe":
+        logger.info(f"Loading nomic with search_*: prefixes: {model_name}")
+        model_prompts = {"query": "search_query: ", "document": "search_document: "}
+        return SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa"},
+            trust_remote_code=True,
+        )
+
+    # kanana sentence-transformer (not in HF prompts config)
+    if "kanana" in name_lower:
+        logger.info(f"Loading kanana model: {model_name}")
+        model_prompts = {
+            "query": "다음은 사용자의 검색 질문입니다. 질문에 답할 수 있는 문서를 찾아주세요.\n질문:",
+        }
+        return SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa"},
+            trust_remote_code=True,
+        )
+
+    # Default: load the model and let mteb auto-pick built-in prompts.
+    logger.info(f"Loading sentence-transformer with built-in prompts: {model_name}")
+    return SentenceTransformerEncoderWrapper(
+        model=model_name,
+        model_kwargs={"attn_implementation": "sdpa"},
+        trust_remote_code=True,
+    )
+
+
+def pick_batch_size(model_name: str) -> int:
+    name_lower = model_name.lower()
+    if name_lower.startswith("upstage/"):
+        return 100
+    if (
+        "multilingual-e5" in name_lower
+        or "koe5" in name_lower
+        or "ontheit" in name_lower
+        or "nomic" in name_lower
+        or "pwc" in name_lower
+    ):
+        return 1200
+    if "jina" in name_lower:
+        return 8
+    if "bge-m3" in name_lower or "snowflake" in name_lower:
+        return 32
+    if "gemma2" in name_lower:
+        return 256
+    if "salesforce" in name_lower:
+        return 128
+    return 64
+
+
+# ---------------------------------------------------------------------------
+# Driver
+# ---------------------------------------------------------------------------
+def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: str, quantize: bool):
+    if not model_name.startswith("upstage/"):
+        # CUDA_VISIBLE_DEVICES is set by the shell wrapper -> remap to local 0.
+        if torch.cuda.device_count() > 0:
+            torch.cuda.set_device(0)
+
+    model = build_model(model_name)
+    setproctitle(f"{model_name}-{gpu_id}")
+    logger.info(
+        f"Running tasks={tasks} model={model_name} on GPU {gpu_id} "
+        f"in process {current_process().name}"
+    )
+
+    task_objs = get_tasks(tasks=tasks, languages=["kor"])
+    evaluation = MTEB(tasks=task_objs)
+    batch_size = pick_batch_size(model_name)
+    logger.info(f"batch_size: {batch_size}")
+
+    encode_kwargs: dict[str, Any] = {"batch_size": batch_size}
+    if quantize:
+        encode_kwargs["precision"] = "binary"
+
+    out = f"{output_dir}/{model_name}" + ("-quantized" if quantize else "")
+    evaluation.run(model, output_folder=out, encode_kwargs=encode_kwargs)
+
+
+def parse_csv(value: str) -> list[str]:
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run MTEB evaluation on selected models and tasks.")
+    parser.add_argument(
+        "--models",
+        type=str,
+        required=True,
+        help="Comma-separated list of model IDs (HF, local paths, or upstage/<name>).",
+    )
+    parser.add_argument(
+        "--tasks",
+        type=str,
+        required=True,
+        help="Comma-separated list of MTEB task names.",
+    )
+    parser.add_argument("--gpu", type=int, default=0, help="GPU number to use.")
+    parser.add_argument("--quantize", action="store_true", help="Use binary quantization.")
+    parser.add_argument(
+        "--output_dir", type=str, default="results", help="Output folder for results."
+    )
+    args = parser.parse_args()
+
+    models = parse_csv(args.models)
+    tasks = parse_csv(args.tasks)
+    if not models:
+        raise SystemExit("No models specified.")
+    if not tasks:
+        raise SystemExit("No tasks specified.")
+
+    logger.info(f"Models: {models}")
+    logger.info(f"Tasks:  {tasks}")
+    logger.info(f"GPU:    {args.gpu}")
+
+    mp.set_start_method("spawn", force=True)
+    with Pool(processes=1) as pool:
+        pool.starmap(
+            evaluate_model,
+            [(m, args.gpu, tasks, args.output_dir, args.quantize) for m in models],
+        )
 
 
 if __name__ == "__main__":
-    mp.set_start_method("spawn", force=True)
-
-    with Pool(processes=len(TASK_LIST_RETRIEVAL_GPU_MAPPING)) as pool:
-        pool.starmap(evaluate_model, [(model_name, gpu_id, tasks) for gpu_id, tasks in TASK_LIST_RETRIEVAL_GPU_MAPPING.items() for model_name in model_names])
+    main()
