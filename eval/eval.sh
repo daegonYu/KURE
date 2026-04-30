@@ -40,7 +40,8 @@ dragonkue/snowflake-arctic-embed-l-v2.0-ko"
     ;;
   upstage)
     MODELS="upstage/solar-embedding-1-large"
-    TASKS="MrTidyRetrieval,MIRACLRetrieval,XPQARetrieval,BelebeleRetrieval,PublicHealthQA,AutoRAGRetrieval,Ko-StrategyQA,LawIRKo,SQuADKorV1Retrieval"
+    # Order: small datasets first so we get partial results quickly.
+    TASKS="LawIRKo,SQuADKorV1Retrieval,AutoRAGRetrieval,Ko-StrategyQA,PublicHealthQA,BelebeleRetrieval,XPQARetrieval,MIRACLRetrieval,MrTidyRetrieval"
     ;;
   *)
     echo "Unknown profile: ${PROFILE}. Available: default, upstage" >&2
@@ -52,13 +53,19 @@ LOG="eval_${PROFILE}.log"
 echo "Profile : ${PROFILE}"
 echo "Models  : ${MODELS//,/ , }"
 echo "Tasks   : ${TASKS}"
-echo "GPU     : ${CUDA_NUM} (ignored for upstage)"
+echo "GPU     : ${CUDA_NUM} (forced CPU for upstage profile)"
 echo "Log     : ${LOG}"
 echo
 
-# Upstage hits an API and does not need a GPU; we still set the env for
-# logging consistency.
-CUDA_VISIBLE_DEVICES=${CUDA_NUM} nohup uv run evaluate.py \
+# Upstage is API-only and would otherwise OOM on shared GPUs because mteb runs
+# similarity ops on CUDA. Hide all GPUs for the upstage profile.
+if [[ "${PROFILE}" == "upstage" ]]; then
+  CUDA_ENV='CUDA_VISIBLE_DEVICES=""'
+else
+  CUDA_ENV="CUDA_VISIBLE_DEVICES=${CUDA_NUM}"
+fi
+
+eval "${CUDA_ENV}" nohup uv run evaluate.py \
   --models "${MODELS}" \
   --tasks "${TASKS}" \
   --gpu ${CUDA_NUM} \

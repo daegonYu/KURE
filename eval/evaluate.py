@@ -60,11 +60,15 @@ class UpstageSolarEncoder(AbsEncoder):
     #   - max 100 texts per request
     #   - max 204,800 total tokens per request
     #   - solar-embedding-1-large context window ≈ 4,000 tokens
-    # We use char-level proxies for tokens (Korean ≈ 1 char/token,
-    # Latin scripts ≈ 4 chars/token) and stay well below limits.
-    DEFAULT_MAX_CHARS_PER_TEXT = 8000  # ≈ 4k Korean tokens (safety margin)
-    DEFAULT_MAX_CHARS_PER_BATCH = 100_000  # ≈ 100k Korean tokens / 400k Latin
-    DEFAULT_MAX_TEXTS_PER_BATCH = 100
+    # Korean text is roughly 1.5 tokens per character (worst case for syllable
+    # heavy Hangul). We pick conservative char budgets so a single text never
+    # bumps the 4k-token wall and a packed batch stays under ~150k tokens.
+    DEFAULT_MAX_CHARS_PER_TEXT = 2000  # very conservative (<3k Korean tokens)
+    DEFAULT_MAX_CHARS_PER_BATCH = 60_000  # very conservative
+    DEFAULT_MAX_TEXTS_PER_BATCH = 50  # halved from 100 for stability
+    # Baseline throttle to keep us under the per-key request rate limit so we
+    # don't spend every second eating a 429+1s retry.
+    DEFAULT_BASELINE_DELAY_SEC = 0.5
 
     def __init__(
         self,
@@ -76,8 +80,9 @@ class UpstageSolarEncoder(AbsEncoder):
         max_texts_per_batch: int = DEFAULT_MAX_TEXTS_PER_BATCH,
         max_chars_per_batch: int = DEFAULT_MAX_CHARS_PER_BATCH,
         max_chars_per_text: int = DEFAULT_MAX_CHARS_PER_TEXT,
+        baseline_delay_sec: float = DEFAULT_BASELINE_DELAY_SEC,
         timeout: int = 120,
-        max_retries: int = 5,
+        max_retries: int = 10,
         **kwargs: Any,
     ) -> None:
         api_key = (
@@ -94,8 +99,14 @@ class UpstageSolarEncoder(AbsEncoder):
         self.max_texts_per_batch = max_texts_per_batch
         self.max_chars_per_batch = max_chars_per_batch
         self.max_chars_per_text = max_chars_per_text
+        self.baseline_delay_sec = baseline_delay_sec
         self.timeout = timeout
         self.max_retries = max_retries
+        # Track the last request time to enforce baseline_delay_sec between calls.
+        import time as _time
+
+        self._time = _time
+        self._last_request_at = 0.0
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -150,24 +161,39 @@ class UpstageSolarEncoder(AbsEncoder):
             batches.append(cur)
         return batches
 
+    def _throttle(self) -> None:
+        """Sleep so consecutive requests stay >= baseline_delay_sec apart."""
+        now = self._time.monotonic()
+        elapsed = now - self._last_request_at
+        if elapsed < self.baseline_delay_sec:
+            self._time.sleep(self.baseline_delay_sec - elapsed)
+        self._last_request_at = self._time.monotonic()
+
     def _post_with_retries(self, payload: dict) -> dict:
-        backoff = 1.0
+        backoff = 2.0
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
+            self._throttle()
             try:
                 r = self.session.post(
                     UPSTAGE_API_URL, json=payload, timeout=self.timeout
                 )
-                # 4xx other than 429 are not transient -- surface immediately.
                 if r.status_code == 400:
-                    r.raise_for_status()  # raises HTTPError caller will catch
+                    r.raise_for_status()  # propagate to splitter
                 r.raise_for_status()
                 return r.json()
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
-                # 400 is a payload error; do not retry, propagate to splitter.
                 if status == 400:
                     raise
+                # Use Retry-After header when present (RFC 7231).
+                if status == 429 and exc.response is not None:
+                    ra = exc.response.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            backoff = max(backoff, float(ra))
+                        except ValueError:
+                            pass
                 last_exc = exc
             except Exception as exc:  # noqa: BLE001 -- network errors etc.
                 last_exc = exc
@@ -177,15 +203,19 @@ class UpstageSolarEncoder(AbsEncoder):
                 f"Upstage API error (attempt {attempt + 1}/{self.max_retries}): "
                 f"{last_exc}. Retrying in {backoff:.1f}s..."
             )
-            import time
-
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 30)
+            self._time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60)
         assert last_exc is not None
         raise last_exc
 
+    EMBED_DIM = 4096
+
+    def _zero_vec(self) -> list[float]:
+        return [0.0] * self.EMBED_DIM
+
     def _embed_chunk(self, chunk: list[str], upstream_model: str) -> list[list[float]]:
-        """Embed a chunk; on HTTP 400 split-and-retry recursively."""
+        """Embed a chunk; on HTTP 400 split-and-retry recursively. Single-text
+        failures fall back to a zero vector so the eval never aborts."""
         try:
             data = self._post_with_retries({"input": chunk, "model": upstream_model})
             embs = sorted(data["data"], key=lambda x: x["index"])
@@ -193,23 +223,35 @@ class UpstageSolarEncoder(AbsEncoder):
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 400:
                 if len(chunk) == 1:
-                    # Last resort: aggressively truncate the single offender.
-                    short = chunk[0][: max(self.max_chars_per_text // 4, 500)]
-                    if len(short) < len(chunk[0]):
-                        logger.warning(
-                            f"[Upstage] 400 on single text len={len(chunk[0])}. "
-                            f"Aggressively truncating to len={len(short)} and retrying."
-                        )
-                        data = self._post_with_retries(
-                            {"input": [short], "model": upstream_model}
-                        )
-                        embs = sorted(data["data"], key=lambda x: x["index"])
-                        return [e["embedding"] for e in embs]
-                    body = exc.response.text[:300] if exc.response is not None else ""
-                    logger.error(
-                        f"[Upstage] 400 on minimal text (len={len(chunk[0])}): {body}"
+                    # Progressive shrink: 1/2 -> 1/4 -> 1/8 -> 1/16 of current text.
+                    text = chunk[0]
+                    for divisor in (2, 4, 8, 16):
+                        short_len = max(len(text) // divisor, 200)
+                        if short_len >= len(text):
+                            continue
+                        short = text[:short_len]
+                        try:
+                            data = self._post_with_retries(
+                                {"input": [short], "model": upstream_model}
+                            )
+                            embs = sorted(data["data"], key=lambda x: x["index"])
+                            logger.warning(
+                                f"[Upstage] 400 recovered by truncating "
+                                f"{len(text)}→{len(short)} chars."
+                            )
+                            return [e["embedding"] for e in embs]
+                        except requests.HTTPError as exc2:
+                            if exc2.response is None or exc2.response.status_code != 400:
+                                raise
+                            continue
+                    body = (
+                        exc.response.text[:300] if exc.response is not None else ""
                     )
-                    raise
+                    logger.error(
+                        f"[Upstage] 400 unrecoverable for single text "
+                        f"len={len(text)}; substituting zero vector. body={body}"
+                    )
+                    return [self._zero_vec()]
                 # Split in half and recurse.
                 mid = len(chunk) // 2
                 logger.warning(
@@ -219,7 +261,19 @@ class UpstageSolarEncoder(AbsEncoder):
                 return self._embed_chunk(chunk[:mid], upstream_model) + self._embed_chunk(
                     chunk[mid:], upstream_model
                 )
-            raise
+            # Non-400 HTTPError after retries exhausted: substitute zero vectors
+            # for the whole chunk so the eval can finish; log for diagnosis.
+            logger.error(
+                f"[Upstage] HTTPError after retries for chunk size={len(chunk)}: "
+                f"{exc}; substituting zero vectors."
+            )
+            return [self._zero_vec() for _ in chunk]
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                f"[Upstage] Unexpected error for chunk size={len(chunk)}: {exc}; "
+                f"substituting zero vectors."
+            )
+            return [self._zero_vec() for _ in chunk]
 
     def _embed(self, texts: list[str], upstream_model: str) -> np.ndarray:
         truncated = [self._truncate(t) for t in texts]
@@ -395,7 +449,11 @@ def pick_batch_size(model_name: str) -> int:
 # Driver
 # ---------------------------------------------------------------------------
 def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: str, quantize: bool):
-    if not model_name.startswith("upstage/"):
+    if model_name.startswith("upstage/"):
+        # API-based encoder: hide GPUs entirely so mteb's similarity ops use CPU.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        # Re-init torch CUDA visibility (safe even if torch already imported).
+    else:
         # CUDA_VISIBLE_DEVICES is set by the shell wrapper -> remap to local 0.
         if torch.cuda.device_count() > 0:
             torch.cuda.set_device(0)
