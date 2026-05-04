@@ -1,223 +1,141 @@
-# 🔎 KURE: Korea University Retrieval Embedding model
+# MTEB Korean Retrieval Evaluation
 
-## Update Logs
-- 2024.12.21: [🤗 KURE-v1](https://huggingface.co/nlpai-lab/KURE-v1), [MTEB-ko-retrieval Leaderboard](https://github.com/nlpai-lab/KURE?tab=readme-ov-file#mteb-ko-retrieval-leaderboard) 공개
-- 2024.10.02: [🤗 KoE5](https://huggingface.co/nlpai-lab/KoE5), [🤗 ko-triplet-v1.0](https://huggingface.co/datasets/nlpai-lab/ko-triplet-v1.0) 공개
+한국어 retrieval 임베딩 모델을 MTEB Korean retrieval task로 NDCG@10 평가한 결과를 정리한 문서입니다. **Upstage solar-embedding-1-large**(임베딩 4096차원, 1B+ 추정)는 동체급 비교가 아니므로 본 표에서 제외했습니다.
 
----
+## 평가 데이터셋 (9개 task)
 
-<br>
+모든 task는 NDCG@10으로 측정하며, 다국어 task는 한국어 subset을 선택했습니다.
 
-KURE는 고려대학교 [NLP & AI 연구실](http://nlp.korea.ac.kr/)과 [HIAI 연구소](http://hiai.korea.ac.kr)가 개발한 한국어 특화 임베딩 모델입니다.
+| Task | 도메인 / 형태 | 설명 |
+|---|---|---|
+| **LawIRKo** | 법률 / 한국어 | 한국 법률 도메인 정보 검색. 법률 질의에 적합한 조문·판례 문서를 찾는 task. |
+| **SQuADKorV1Retrieval** | 일반 / 한국어 | 한국어 SQuAD v1 기반. 질문이 주어졌을 때 정답이 포함된 위키피디아 문단을 retrieval. |
+| **AutoRAGRetrieval** | 다도메인 / 한국어 | AutoRAG 벤치마크의 한국어 retrieval. 다양한 도메인의 QA 컨텍스트 검색. |
+| **Ko-StrategyQA** | 추론 / 한국어 | StrategyQA의 한국어판. 다단계 전략적 추론을 요하는 yes/no 질의에 대한 근거 문서 검색. |
+| **PublicHealthQA** | 의료 / 한국어 | 한국 공중보건·의료 도메인 QA의 근거 문서 검색. |
+| **BelebeleRetrieval** | 독해 / multilingual | Belebele MRC 데이터를 retrieval로 변환. 한국어 subset 3개(kor-kor, kor-eng, eng-kor) 중 kor-kor 우선 사용. |
+| **MultiLongDocRetrieval** | 장문 / multilingual | MLDR 다국어 long-document retrieval. `ko` subset(한국어 long-document) 사용. |
+| **MIRACLRetrieval** | 위키 / multilingual | Wikipedia 기반 다국어 retrieval. 한국어 subset 사용. |
+| **MrTidyRetrieval** | 위키 / multilingual | Mr. TyDi 한국어 subset, Wikipedia 기반 단답형 QA의 정답 문단 검색. |
 
-KURE를 공개합니다.  
-<br/>
+## 평가 모델
 
-## KURE 모델 실행 코드
-### sentence-transformers로 실행
+비교 대상: **31개 모델** (upstage 제외). 회사/팀 정보와 핵심 특징만 요약했고, 상세 사양은 각 모델의 Hugging Face 카드를 참조하세요.
+
+| Model | 설명 |
+|---|---|
+| **telepix/PIXIE-Rune-v1.0** | **TelePIX** PIXIE-Rune v1.0 임베딩. |
+| **telepix/PIXIE-Rune-Preview** | **TelePIX** PIXIE-Rune Preview (개발 중 버전). |
+| **dragonkue/snowflake-arctic-embed-l-v2.0-ko** | Hugging Face 사용자 **`dragonkue`**의 커뮤니티 fine-tune. Snowflake Arctic Embed L v2.0(XLM-R Large 기반)에 한국어 코퍼스로 추가 학습. 1024차원. |
+| **nlpai-lab/KURE-v1** | **고려대학교 NLP & AI 연구실(nlpai-lab)** 공개. Korean Universal Retrieval Embedding, 한국어 retrieval 특화 학습. |
+| **telepix/PIXIE-Rune-v1.5** | **TelePIX**(한국 TELEPIX, AI 솔루션 기업) PIXIE-Rune v1.5 임베딩. |
+| **BAAI/bge-m3** | **BAAI(Beijing Academy of Artificial Intelligence, 베이징인공지능연구원)** BGE-M3. multi-functionality(dense/sparse/multi-vector) · multi-linguality(100+ languages) 지원. |
+| **dragonkue/multilingual-e5-small-ko** | Hugging Face 사용자 **`dragonkue`**의 multilingual-e5-small 한국어 fine-tune. |
+| **exp-models/dragonkue-KoEn-E5-Tiny** | Hugging Face 사용자 **`dragonkue`** 공개 KoEn-E5 Tiny. 한국어/영어 경량 E5. |
+| **Snowflake/snowflake-arctic-embed-l-v2.0** | **Snowflake**(미국 데이터 클라우드 기업) Arctic 시리즈 다국어 retrieval embedding. XLM-RoBERTa Large 기반, 1024차원. |
+| **intfloat/multilingual-e5-large** | **Microsoft**(intfloat 계정) Multilingual E5 large. XLM-RoBERTa Large 기반 contrastive 학습. |
+| **nlpai-lab/KoE5** | **고려대학교 NLP & AI 연구실(nlpai-lab)** 공개. E5 계열을 한국어로 학습한 모델. |
+| **dragonkue/BGE-m3-ko** | Hugging Face 사용자 **`dragonkue`**의 커뮤니티 fine-tune. BGE-M3에 한국어 코퍼스 추가 학습. |
+| **intfloat/multilingual-e5-small** | **Microsoft** Multilingual E5 small. 경량 base 모델. |
+| **Snowflake/snowflake-arctic-embed-m-v2.0** | **Snowflake** Arctic 시리즈 medium 변형. multilingual retrieval embedding. |
+| **SamilPwC-AXNode-GenAI/PwC-Embedding_expr** | **삼일PwC(Samil PwC) AXNode GenAI 팀** 실험용 임베딩 모델. |
+| **Qwen/Qwen3-Embedding-0.6B** | **Alibaba Cloud Qwen 팀** Qwen3 Embedding 0.6B 파라미터 모델. |
+| **BAAI/bge-multilingual-gemma2** | **BAAI** Gemma2 기반 multilingual embedding. instruct-style query prefix 사용, last-token pooling, fp16. |
+| **jinaai/jina-embeddings-v3** | **Jina AI**(독일/베를린, 검색·RAG 인프라 회사) v3 multilingual embedding. XLM-R 기반에 LoRA adapter로 task-specific fine-tune. |
+| **Alibaba-NLP/gte-multilingual-base** | **Alibaba NLP** GTE multilingual base. multilingual general-purpose embedding. |
+| **nomic-ai/nomic-embed-text-v2-moe** | **Nomic AI**(미국, 임베딩·AI 검색 회사) nomic-embed-text v2 MoE. Mixture-of-Experts 기반 multilingual. |
+| **intfloat/multilingual-e5-large-instruct** | **Microsoft** Multilingual E5 large instruct 변형. instruction-aware contrastive 학습. |
+| **intfloat/multilingual-e5-base** | **Microsoft** Multilingual E5 base. XLM-RoBERTa Base 기반. |
+| **Alibaba-NLP/gte-Qwen2-7B-instruct** | **Alibaba NLP** GTE Qwen2 7B instruct. Qwen2 7B 기반 instruction-aware embedding. |
+| **intfloat/e5-mistral-7b-instruct** | **Microsoft** E5 mistral 7B instruct. Mistral 7B LLM 기반 instruction-aware embedding. |
+| **ibm-granite/granite-embedding-107m-multilingual** | **IBM Research** Granite multilingual embedding 107M (경량). |
+| **openai/text-embedding-3-large** | **OpenAI** text-embedding-3-large. OpenAI 임베딩 API의 대형 모델. |
+| **upskyy/bge-m3-korean** | Hugging Face 사용자 **`upskyy`**의 BGE-M3 한국어 fine-tune. |
+| **Salesforce/SFR-Embedding-2_R** | **Salesforce Research** SFR-Embedding 2 R. Mistral 7B 기반 reranking 강화 embedding. |
+| **ibm-granite/granite-embedding-278m-multilingual** | **IBM Research** Granite multilingual embedding 278M. |
+| **jhgan/ko-sroberta-multitask** | Hugging Face 사용자 **`jhgan`**의 한국어 SBERT/RoBERTa multitask 모델. |
+| **sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2** | **UKP Lab / sentence-transformers 커뮤니티** Multilingual MiniLM-L12 v2. 경량 multilingual SBERT. |
+
+## 결과 표 (NDCG@10)
+
+Average 내림차순. 누락 셀(`—`)은 해당 (model, task) 평가 결과가 없는 경우이며 평균 계산에서 제외했습니다.
+
+| Model | LawIRKo | SQuADKorV1Retrieval | AutoRAGRetrieval | Ko-StrategyQA | PublicHealthQA | BelebeleRetrieval | MultiLongDocRetrieval | MIRACLRetrieval | MrTidyRetrieval | Average |
+|---|---|---|---|---|---|---|---|---|---|---|
+| telepix/PIXIE-Rune-v1.0 | 0.7698 | 0.9457 | 0.8966 | 0.8046 | 0.8398 | 0.9601 | 0.4231 | — | — | 0.8057 |
+| telepix/PIXIE-Rune-Preview | 0.7709 | 0.9466 | 0.9112 | 0.8083 | 0.8394 | 0.9526 | 0.4222 | 0.6673 | 0.5755 | 0.7660 |
+| dragonkue/snowflake-arctic-embed-l-v2.0-ko | 0.7735 | 0.9447 | 0.9093 | 0.8050 | 0.8337 | 0.9518 | 0.4150 | 0.6685 | 0.5712 | 0.7636 |
+| nlpai-lab/KURE-v1 | 0.7426 | 0.9357 | 0.8708 | 0.7999 | 0.8193 | 0.9502 | 0.4521 | 0.6816 | 0.5909 | 0.7603 |
+| telepix/PIXIE-Rune-v1.5 | 0.7705 | 0.9457 | 0.8927 | 0.8064 | 0.8426 | 0.9617 | 0.4340 | 0.6393 | 0.5492 | 0.7602 |
+| BAAI/bge-m3 | 0.7174 | 0.9038 | 0.8301 | 0.7941 | 0.8041 | 0.9316 | 0.4273 | 0.7015 | 0.6471 | 0.7508 |
+| dragonkue/multilingual-e5-small-ko | — | — | 0.8618 | 0.7617 | 0.7973 | 0.9297 | — | 0.6111 | 0.5113 | 0.7455 |
+| exp-models/dragonkue-KoEn-E5-Tiny | — | — | 0.8650 | 0.7598 | 0.7925 | 0.9302 | — | 0.6143 | 0.5033 | 0.7442 |
+| Snowflake/snowflake-arctic-embed-l-v2.0 | 0.7578 | 0.9121 | 0.8386 | 0.8045 | 0.8168 | 0.9271 | 0.3688 | 0.6608 | 0.5907 | 0.7419 |
+| intfloat/multilingual-e5-large | 0.7293 | 0.9056 | 0.8134 | 0.8035 | 0.8253 | 0.9450 | 0.2708 | 0.6649 | 0.6421 | 0.7333 |
+| nlpai-lab/KoE5 | 0.7756 | 0.8980 | 0.8434 | 0.8001 | 0.8351 | 0.9425 | 0.2942 | 0.6235 | 0.5841 | 0.7329 |
+| dragonkue/BGE-m3-ko | — | — | 0.8738 | 0.7959 | 0.8155 | 0.9503 | 0.3784 | 0.6833 | 0.6099 | 0.7296 |
+| intfloat/multilingual-e5-small | — | — | 0.8007 | 0.7516 | 0.7367 | 0.9053 | — | 0.6124 | 0.5597 | 0.7277 |
+| Snowflake/snowflake-arctic-embed-m-v2.0 | — | — | 0.8381 | 0.7148 | 0.7727 | 0.8746 | — | 0.5978 | 0.5121 | 0.7184 |
+| SamilPwC-AXNode-GenAI/PwC-Embedding_expr | 0.7400 | 0.8825 | 0.7849 | 0.7976 | 0.8346 | 0.9167 | 0.2663 | 0.6321 | 0.5666 | 0.7135 |
+| Qwen/Qwen3-Embedding-0.6B | 0.7247 | 0.8503 | 0.8240 | 0.7660 | 0.8029 | 0.9160 | 0.3910 | 0.6002 | 0.4899 | 0.7072 |
+| BAAI/bge-multilingual-gemma2 | — | — | 0.7653 | 0.7907 | 0.8710 | 0.9500 | 0.2828 | 0.7032 | 0.4752 | 0.6912 |
+| jinaai/jina-embeddings-v3 | — | — | 0.7610 | 0.7981 | 0.8306 | 0.9120 | 0.3229 | 0.6372 | 0.5576 | 0.6885 |
+| Alibaba-NLP/gte-multilingual-base | — | — | 0.7711 | 0.7512 | 0.7458 | 0.8796 | 0.4673 | 0.6270 | 0.5646 | 0.6867 |
+| nomic-ai/nomic-embed-text-v2-moe | — | — | 0.8068 | 0.7632 | 0.7845 | 0.9364 | 0.2715 | 0.6591 | 0.5377 | 0.6799 |
+| intfloat/multilingual-e5-large-instruct | — | — | 0.7800 | 0.7979 | 0.8497 | 0.9360 | 0.2552 | 0.5991 | 0.5288 | 0.6781 |
+| intfloat/multilingual-e5-base | — | — | 0.7975 | 0.7635 | 0.7720 | 0.9287 | 0.2249 | 0.6227 | 0.5808 | 0.6700 |
+| Alibaba-NLP/gte-Qwen2-7B-instruct | — | — | 0.7668 | 0.8108 | 0.8584 | 0.9481 | 0.2937 | 0.5337 | 0.4657 | 0.6682 |
+| intfloat/e5-mistral-7b-instruct | — | — | 0.6785 | 0.7932 | 0.8873 | 0.9240 | 0.2616 | 0.5871 | 0.5244 | 0.6652 |
+| ibm-granite/granite-embedding-107m-multilingual | — | — | 0.6824 | 0.7053 | 0.7321 | 0.8206 | — | 0.5841 | 0.4431 | 0.6613 |
+| openai/text-embedding-3-large | — | — | 0.7647 | 0.7363 | 0.8562 | 0.8945 | 0.2848 | 0.5625 | 0.4473 | 0.6495 |
+| upskyy/bge-m3-korean | — | — | 0.7295 | 0.7528 | 0.7756 | 0.8731 | 0.2279 | 0.5989 | 0.5501 | 0.6440 |
+| Salesforce/SFR-Embedding-2_R | — | — | 0.7078 | 0.7704 | 0.8605 | 0.9175 | 0.2680 | 0.5580 | 0.4035 | 0.6408 |
+| ibm-granite/granite-embedding-278m-multilingual | — | — | 0.7023 | 0.7176 | 0.7767 | 0.8323 | 0.2189 | 0.5922 | 0.4637 | 0.6148 |
+| jhgan/ko-sroberta-multitask | — | — | 0.5833 | 0.6510 | 0.6921 | 0.8164 | 0.2175 | 0.3670 | 0.2948 | 0.5174 |
+| sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | — | — | 0.4230 | 0.4590 | 0.6741 | 0.7149 | — | 0.2568 | 0.1272 | 0.4425 |
+
+## 평가 실행
+
+`eval/evaluate.py`로 단일/다중 모델 × 단일/다중 task를 평가합니다. tmux 세션 내 실행을 권장합니다.
+
+### 환경 준비
+
 ```bash
-pip install sentence-transformers
+# uv 가상 환경 (.venv)
+uv sync
+# 일부 모델 추가 의존성
+uv pip install einops peft  # jinaai-v3 / v5 family에 필요
 ```
 
-아래 예제 코드로 실행해볼 수 있습니다.
+### 단일 GPU에서 다중 모델 평가
 
-```python
-from sentence_transformers import SentenceTransformer
-
-# Download from the 🤗 Hub
-
-model = SentenceTransformer("nlpai-lab/KURE-v1")
-# model = SentenceTransformer("nlpai-lab/KoE5")
-
-# Run inference
-sentences = [
-    '헌법과 법원조직법은 어떤 방식을 통해 기본권 보장 등의 다양한 법적 모색을 가능하게 했어',
-    '4. 시사점과 개선방향 앞서 살펴본 바와 같이 우리 헌법과 ｢법원조직 법｣은 대법원 구성을 다양화하여 기본권 보장과 민주주의 확립에 있어 다각적인 법적 모색을 가능하게 하는 것을 근본 규범으로 하고 있다. 더욱이 합의체로서의 대법원 원리를 채택하고 있는 것 역시 그 구성의 다양성을 요청하는 것으로 해석된다. 이와 같은 관점에서 볼 때 현직 법원장급 고위법관을 중심으로 대법원을 구성하는 관행은 개선할 필요가 있는 것으로 보인다.',
-    '연방헌법재판소는 2001년 1월 24일 5:3의 다수견해로 「법원조직법」 제169조 제2문이 헌법에 합치된다는 판결을 내렸음 ○ 5인의 다수 재판관은 소송관계인의 인격권 보호, 공정한 절차의 보장과 방해받지 않는 법과 진실 발견 등을 근거로 하여 텔레비전 촬영에 대한 절대적인 금지를 헌법에 합치하는 것으로 보았음 ○ 그러나 나머지 3인의 재판관은 행정법원의 소송절차는 특별한 인격권 보호의 이익도 없으며, 텔레비전 공개주의로 인해 법과 진실 발견의 과정이 언제나 위태롭게 되는 것은 아니라면서 반대의견을 제시함 ○ 왜냐하면 행정법원의 소송절차에서는 소송당사자가 개인적으로 직접 심리에 참석하기보다는 변호사가 참석하는 경우가 많으며, 심리대상도 사실문제가 아닌 법률문제가 대부분이기 때문이라는 것임 □ 한편, 연방헌법재판소는 「연방헌법재판소법」(Bundesverfassungsgerichtsgesetz: BVerfGG) 제17a조에 따라 제한적이나마 재판에 대한 방송을 허용하고 있음 ○ 「연방헌법재판소법」 제17조에서 「법원조직법」 제14절 내지 제16절의 규정을 준용하도록 하고 있지만, 녹음이나 촬영을 통한 재판공개와 관련하여서는 「법원조직법」과 다른 내용을 규정하고 있음',
-]
-embeddings = model.encode(sentences)
-print(embeddings.shape)
-# [3, 1024]
-
-# Get the similarity scores for the embeddings
-similarities = model.similarity(embeddings, embeddings)
-print(similarities)
-# Results for KURE-v1
-# tensor([[1.0000, 0.6967, 0.5306],
-#         [0.6967, 1.0000, 0.4427],
-#         [0.5306, 0.4427, 1.0000]])
-
-# Results for KoE5
-# tensor([[1.0000, 0.6721, 0.3897],
-#        [0.6721, 1.0000, 0.3740],
-#        [0.3897, 0.3740, 1.0000]])
-```
-
-<br/>
-
-## MTEB-ko-retrieval Leaderboard
-[MTEB](https://github.com/embeddings-benchmark/mteb)에 등록된 모든 Korean Retrieval Benchmark에 대한 평가를 진행하였습니다.
-### Korean Retrieval Benchmark
-- [Ko-StrategyQA](https://huggingface.co/datasets/taeminlee/Ko-StrategyQA): 한국어 ODQA multi-hop 검색 데이터셋 (StrategyQA 번역)
-- [AutoRAGRetrieval](https://huggingface.co/datasets/yjoonjang/markers_bm): 금융, 공공, 의료, 법률, 커머스 5개 분야에 대해, pdf를 파싱하여 구성한 한국어 문서 검색 데이터셋
-- [MIRACLRetrieval](https://huggingface.co/datasets/miracl/miracl): Wikipedia 기반의 한국어 문서 검색 데이터셋
-- [PublicHealthQA](https://huggingface.co/datasets/xhluca/publichealth-qa): 의료 및 공중보건 도메인에 대한 한국어 문서 검색 데이터셋
-- [BelebeleRetrieval](https://huggingface.co/datasets/facebook/belebele): FLORES-200 기반의 한국어 문서 검색 데이터셋
-- [MrTidyRetrieval](https://huggingface.co/datasets/mteb/mrtidy): Wikipedia 기반의 한국어 문서 검색 데이터셋
-- [MultiLongDocRetrieval](https://huggingface.co/datasets/Shitao/MLDR): 다양한 도메인의 한국어 장문 검색 데이터셋
-- [XPQARetrieval](https://huggingface.co/datasets/jinaai/xpqa): 다양한 도메인의 한국어 문서 검색 데이터셋
-
-### Evaluation code
-`evaluate.py`에 모델을 추가하여 mteb를 활용한 평가를 진행할 수 있습니다.
 ```bash
 cd eval
-pip install -r requirements.txt
-python evaluate.py
+CUDA_VISIBLE_DEVICES=0 uv run evaluate.py \
+    --models 'BAAI/bge-m3,nlpai-lab/KURE-v1,Qwen/Qwen3-Embedding-0.6B' \
+    --tasks 'LawIRKo,SQuADKorV1Retrieval,AutoRAGRetrieval,Ko-StrategyQA,PublicHealthQA,BelebeleRetrieval,XPQARetrieval,MIRACLRetrieval,MrTidyRetrieval' \
+    --gpu 0
 ```
 
-### Leaderboard
-streamlit을 통해 모든 모델의 모든 태스크에 대한 평가 결과를 시각화합니다.
+- `--models`: 콤마로 구분된 모델 ID. Hugging Face 모델 ID 또는 로컬 경로. `upstage/<name>` 형식이면 API 호출.
+- `--tasks`: 콤마로 구분된 MTEB task 이름. 위 9개가 표준 한국어 retrieval set.
+- `--gpu`: 사용 GPU 번호.
+- `--quantize`: 임베딩을 binary로 양자화 (선택).
+- 결과는 `eval/results/<org>/<model>/<...>/<task>.json` 으로 저장됨. 같은 (model, task) 결과가 이미 있으면 mteb가 자동 skip.
+
+### 프리셋 스크립트
+
 ```bash
-streamlit run leaderboard.py
+# eval/eval.sh: default 또는 upstage 프로파일
+cd eval
+./eval.sh 0 default   # GPU 0, 기본 모델 묶음
+./eval.sh 0 upstage   # API 기반 upstage 평가
 ```
 
-아래는 모든 모델의, 모든 벤치마크 데이터셋에 대한 평균 결과입니다.
-자세한 결과는 `eval/results`폴더에서 확인하실 수 있습니다.
-### Top-k 1
-| Model                                   | Average Recall | Average Precision | Average NDCG | Average F1 |
-|-----------------------------------------|----------------------|------------------------|-------------------|-----------------|
-| **nlpai-lab/KURE-v1**                   | **0.52640**          | **0.60551**            | **0.60551**       | **0.55784**     |
-| dragonkue/BGE-m3-ko                     | 0.52361              | 0.60394                | 0.60394           | 0.55535         |
-| BAAI/bge-m3                             | 0.51778              | 0.59846                | 0.59846           | 0.54998         |
-| Snowflake/snowflake-arctic-embed-l-v2.0 | 0.51246              | 0.59384                | 0.59384           | 0.54489         |
-| nlpai-lab/KoE5                          | 0.50157              | 0.57790                | 0.57790           | 0.53178         |
-| intfloat/multilingual-e5-large          | 0.50052              | 0.57727                | 0.57727           | 0.53122         |
-| jinaai/jina-embeddings-v3               | 0.48287              | 0.56068                | 0.56068           | 0.51361         |
-| BAAI/bge-multilingual-gemma2            | 0.47904              | 0.55472                | 0.55472           | 0.50916         |
-| intfloat/multilingual-e5-large-instruct | 0.47842              | 0.55435                | 0.55435           | 0.50826         |
-| intfloat/multilingual-e5-base           | 0.46950              | 0.54490                | 0.54490           | 0.49947         |
-| intfloat/e5-mistral-7b-instruct         | 0.46772              | 0.54394                | 0.54394           | 0.49781         |
-| Alibaba-NLP/gte-multilingual-base       | 0.46469              | 0.53744                | 0.53744           | 0.49353         |
-| Alibaba-NLP/gte-Qwen2-7B-instruct       | 0.46633              | 0.53625                | 0.53625           | 0.49429         |
-| openai/text-embedding-3-large           | 0.44884              | 0.51688                | 0.51688           | 0.47572         |
-| Salesforce/SFR-Embedding-2_R            | 0.43748              | 0.50815                | 0.50815           | 0.46504         |
-| upskyy/bge-m3-korean                    | 0.43125              | 0.50245                | 0.50245           | 0.45945         |
-| jhgan/ko-sroberta-multitask             | 0.33788              | 0.38497                | 0.38497           | 0.35678         |
+### 결과 표 재생성
 
-### Top-k 3
-| Model                                   | Average Recall | Average Precision | Average NDCG | Average F1 |
-|-----------------------------------------|----------------------|------------------------|-------------------|-----------------|
-| **nlpai-lab/KURE-v1**                   | **0.68678**          | **0.28711**            | **0.65538**       | **0.39835**     |
-| dragonkue/BGE-m3-ko                     | 0.67834              | 0.28385                | 0.64950           | 0.39378         |
-| BAAI/bge-m3                             | 0.67526              | 0.28374                | 0.64556           | 0.39291         |
-| Snowflake/snowflake-arctic-embed-l-v2.0 | 0.67128              | 0.28193                | 0.64042           | 0.39072         |
-| intfloat/multilingual-e5-large          | 0.65807              | 0.27777                | 0.62822           | 0.38423         |
-| nlpai-lab/KoE5                          | 0.65174              | 0.27329                | 0.62369           | 0.37882         |
-| BAAI/bge-multilingual-gemma2            | 0.64415              | 0.27416                | 0.61105           | 0.37782         |
-| jinaai/jina-embeddings-v3               | 0.64116              | 0.27165                | 0.60954           | 0.37511         |
-| intfloat/multilingual-e5-large-instruct | 0.64353              | 0.27040                | 0.60790           | 0.37453         |
-| Alibaba-NLP/gte-multilingual-base       | 0.63744              | 0.26404                | 0.59695           | 0.36764         |
-| Alibaba-NLP/gte-Qwen2-7B-instruct       | 0.63163              | 0.25937                | 0.59237           | 0.36263         |
-| intfloat/multilingual-e5-base           | 0.62099              | 0.26144                | 0.59179           | 0.36203         |
-| intfloat/e5-mistral-7b-instruct         | 0.62087              | 0.26144                | 0.58917           | 0.36188         |
-| openai/text-embedding-3-large           | 0.61035              | 0.25356                | 0.57329           | 0.35270         |
-| Salesforce/SFR-Embedding-2_R            | 0.60001              | 0.25253                | 0.56346           | 0.34952         |
-| upskyy/bge-m3-korean                    | 0.59215              | 0.25076                | 0.55722           | 0.34623         |
-| jhgan/ko-sroberta-multitask             | 0.46930              | 0.18994                | 0.43293           | 0.26696         |
-
-### Top-k 5
-| Model                                   | Average Recall | Average Precision | Average NDCG | Average F1 |
-|-----------------------------------------|----------------------|------------------------|-------------------|-----------------|
-| **nlpai-lab/KURE-v1**                   | **0.73851**          | **0.19130**            | **0.67479**       | **0.29903**     |
-| dragonkue/BGE-m3-ko                     | 0.72517              | 0.18799                | 0.66692           | 0.29401         |
-| BAAI/bge-m3                             | 0.72954              | 0.18975                | 0.66615           | 0.29632         |
-| Snowflake/snowflake-arctic-embed-l-v2.0 | 0.72962              | 0.18875                | 0.66236           | 0.29542         |
-| nlpai-lab/KoE5                          | 0.70820              | 0.18287                | 0.64499           | 0.28628         |
-| intfloat/multilingual-e5-large          | 0.70124              | 0.18316                | 0.64402           | 0.28588         |
-| BAAI/bge-multilingual-gemma2            | 0.70258              | 0.18556                | 0.63338           | 0.28851         |
-| jinaai/jina-embeddings-v3               | 0.69933              | 0.18256                | 0.63133           | 0.28505         |
-| intfloat/multilingual-e5-large-instruct | 0.69018              | 0.17838                | 0.62486           | 0.27933         |
-| Alibaba-NLP/gte-multilingual-base       | 0.69365              | 0.17789                | 0.61896           | 0.27879         |
-| intfloat/multilingual-e5-base           | 0.67250              | 0.17406                | 0.61119           | 0.27247         |
-| Alibaba-NLP/gte-Qwen2-7B-instruct       | 0.67447              | 0.17114                | 0.60952           | 0.26943         |
-| intfloat/e5-mistral-7b-instruct         | 0.67449              | 0.17484                | 0.60935           | 0.27349         |
-| openai/text-embedding-3-large           | 0.66365              | 0.17004                | 0.59389           | 0.26677         |
-| Salesforce/SFR-Embedding-2_R            | 0.65622              | 0.17018                | 0.58494           | 0.26612         |
-| upskyy/bge-m3-korean                    | 0.65477              | 0.17015                | 0.58073           | 0.26589         |
-| jhgan/ko-sroberta-multitask             | 0.53136              | 0.13264                | 0.45879           | 0.20976         |
-
-### Top-k 10
-| Model                                   | Average Recall | Average Precision | Average NDCG | Average F1 |
-|-----------------------------------------|----------------------|------------------------|-------------------|-----------------|
-| **nlpai-lab/KURE-v1**                   | **0.79682**          | **0.10624**            | **0.69473**       | **0.18524**     |
-| dragonkue/BGE-m3-ko                     | 0.78450              | 0.10492                | 0.68748           | 0.18288         |
-| BAAI/bge-m3                             | 0.79195              | 0.10592                | 0.68723           | 0.18456         |
-| Snowflake/snowflake-arctic-embed-l-v2.0 | 0.78669              | 0.10462                | 0.68189           | 0.18260         |
-| intfloat/multilingual-e5-large          | 0.75902              | 0.10147                | 0.66370           | 0.17693         |
-| nlpai-lab/KoE5                          | 0.75296              | 0.09937                | 0.66012           | 0.17369         |
-| BAAI/bge-multilingual-gemma2            | 0.76153              | 0.10364                | 0.65330           | 0.18003         |
-| jinaai/jina-embeddings-v3               | 0.76277              | 0.10240                | 0.65290           | 0.17843         |
-| intfloat/multilingual-e5-large-instruct | 0.74851              | 0.09888                | 0.64451           | 0.17283         |
-| Alibaba-NLP/gte-multilingual-base       | 0.75631              | 0.09938                | 0.64025           | 0.17363         |
-| Alibaba-NLP/gte-Qwen2-7B-instruct       | 0.74092              | 0.09607                | 0.63258           | 0.16847         |
-| intfloat/multilingual-e5-base           | 0.73512              | 0.09717                | 0.63216           | 0.16977         |
-| intfloat/e5-mistral-7b-instruct         | 0.73795              | 0.09777                | 0.63076           | 0.17078         |
-| openai/text-embedding-3-large           | 0.72946              | 0.09571                | 0.61670           | 0.16739         |
-| Salesforce/SFR-Embedding-2_R            | 0.71662              | 0.09546                | 0.60589           | 0.16651         |
-| upskyy/bge-m3-korean                    | 0.71895              | 0.09583                | 0.60258           | 0.16712         |
-| jhgan/ko-sroberta-multitask             | 0.61225              | 0.07826                | 0.48687           | 0.13757         |
-<br/>
-
-## Training Details
-- KURE-v1은 [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3)를 기반으로 fine-tuning된 모델입니다.
-- KoE5는 [intfloat/multilingual-e5-large](https://huggingface.co/intfloat/multilingual-e5-large)를 기반으로 fine-tuning된 모델입니다.
-
-### Training Data
-**KURE-v1**
-- 한국어 query-document-hard_negative(5개) 데이터 쌍 
-- 약 2,000,000 examples
-
-**KoE5**
-- [ko-triplet-v1.0](https://huggingface.co/datasets/nlpai-lab/ko-triplet-v1.0)
-- 한국어 query-document-hard_negative(1개) 데이터 쌍 (open data)
-- 약 700,000+ examples
-
-### Training Procedure
-**KURE-v1**
-- loss: [CachedGISTEmbedLoss](https://sbert.net/docs/package_reference/sentence_transformer/losses.html#cachedgistembedloss)
-- batch size: 4096
-- learning rate: 2e-05
-- epochs: 1
-
-**KoE5**
-- loss: [CachedMultipleNegativesRankingLoss](https://sbert.net/docs/package_reference/sentence_transformer/losses.html#cachedmultiplenegativesrankingloss)
-- batch size: 512
-- learning rate: 1e-05
-- epochs: 1
-
-<br/>
-
-## 주의사항
-- KoE5 사용 시, prefix를 붙여 주어야 합니다. (query: {query}, passage: {document})
-  
-## License
-- ```MIT```
-
-## Citation
-If you find our paper or models helpful, please consider cite as follows:
-```text
-@misc{KURE,
-  publisher = {Youngjoon Jang, Junyoung Son, Taemin Lee},
-  year = {2024},
-  url = {https://github.com/nlpai-lab/KURE}
-},
-
-@misc{KoE5,
-  author = {NLP & AI Lab and Human-Inspired AI research},
-  title = {KoE5: 한국어 임베딩 성능 향상을 위한 새로운 데이터셋 및 모델},
-  year = {2024},
-  publisher = {Youngjoon Jang, Junyoung Son, Taemin Lee},
-  journal = {GitHub repository},
-  howpublished = {\url{https://drive.google.com/file/d/1wB02XGFH5v18iJYSYB0oJkWFYxH0ftoJ/view}},
-}
+```bash
+uv run python scripts/build_results_table.py     # eval/results_summary.md 갱신
+uv run python scripts/verify_results_table.py    # 셀 정확성 검증
+uv run python scripts/build_readme.py            # README.md 갱신 (이 파일)
 ```

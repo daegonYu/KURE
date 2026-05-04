@@ -42,6 +42,76 @@ logger = logging.getLogger("main")
 
 
 # ---------------------------------------------------------------------------
+# mteb BelebeleRetrieval loader patch
+# ---------------------------------------------------------------------------
+def _patch_belebele_loader() -> None:
+    # mteb's BelebeleRetrieval.load_data calls load_dataset(path, revision)
+    # without a config name, but mteb/belebele requires a per-language config
+    # (e.g. "kor_Hang"). Replace load_data with one that loads each language
+    # config separately and keys self.dataset by language code, matching how
+    # the rest of the original method consumes self.dataset[lang_code].
+    from datasets import load_dataset
+    from mteb.tasks.retrieval.multilingual.belebele_retrieval import (
+        BelebeleRetrieval,
+    )
+
+    _EVAL_SPLIT = "test"
+
+    def load_data(self, **kwargs) -> None:
+        if self.data_loaded:
+            return
+        needed_langs: set[str] = set()
+        for lang_pair in self.hf_subsets:
+            for lang in self.metadata.eval_langs[lang_pair]:
+                needed_langs.add(lang.replace("-", "_"))
+        self.dataset = {}
+        for lang in needed_langs:
+            self.dataset[lang] = load_dataset(
+                self.metadata.dataset["path"],
+                lang,
+                revision=self.metadata.dataset["revision"],
+                split=_EVAL_SPLIT,
+            )
+        self.queries = {lp: {_EVAL_SPLIT: {}} for lp in self.hf_subsets}
+        self.corpus = {lp: {_EVAL_SPLIT: {}} for lp in self.hf_subsets}
+        self.relevant_docs = {lp: {_EVAL_SPLIT: {}} for lp in self.hf_subsets}
+        for lang_pair in self.hf_subsets:
+            langs = self.metadata.eval_langs[lang_pair]
+            lang_corpus = langs[0].replace("-", "_")
+            lang_question = langs[1].replace("-", "_")
+            ds_corpus = self.dataset[lang_corpus]
+            ds_question = self.dataset[lang_question]
+            question_ids: dict[str, int] = {}
+            for row in ds_question:
+                q = row["question"]
+                if q not in question_ids:
+                    question_ids[q] = len(question_ids)
+            link_to_context_id: dict[str, str] = {}
+            context_idx = 0
+            for row in ds_corpus:
+                if row["link"] not in link_to_context_id:
+                    cid = f"C{context_idx}"
+                    link_to_context_id[row["link"]] = cid
+                    self.corpus[lang_pair][_EVAL_SPLIT][cid] = {
+                        "title": "",
+                        "text": row["flores_passage"],
+                    }
+                    context_idx += 1
+            for row in ds_question:
+                qid = f"Q{question_ids[row['question']]}"
+                self.queries[lang_pair][_EVAL_SPLIT][qid] = row["question"]
+                cid = link_to_context_id[row["link"]]
+                self.relevant_docs[lang_pair][_EVAL_SPLIT].setdefault(qid, {})[cid] = 1
+        self.data_loaded = True
+
+    BelebeleRetrieval.load_data = load_data
+    logger.info("Patched mteb.BelebeleRetrieval.load_data to load per-language configs.")
+
+
+_patch_belebele_loader()
+
+
+# ---------------------------------------------------------------------------
 # Upstage Solar embedding API encoder
 # ---------------------------------------------------------------------------
 UPSTAGE_API_URL = "https://api.upstage.ai/v1/solar/embeddings"
@@ -64,11 +134,11 @@ class UpstageSolarEncoder(AbsEncoder):
     # heavy Hangul). We pick conservative char budgets so a single text never
     # bumps the 4k-token wall and a packed batch stays under ~150k tokens.
     DEFAULT_MAX_CHARS_PER_TEXT = 2000  # very conservative (<3k Korean tokens)
-    DEFAULT_MAX_CHARS_PER_BATCH = 60_000  # very conservative
-    DEFAULT_MAX_TEXTS_PER_BATCH = 50  # halved from 100 for stability
+    DEFAULT_MAX_CHARS_PER_BATCH = 30_000  # halved for MLDR long-doc traffic
+    DEFAULT_MAX_TEXTS_PER_BATCH = 20  # reduced from 50 to ease 429s on MLDR
     # Baseline throttle to keep us under the per-key request rate limit so we
     # don't spend every second eating a 429+1s retry.
-    DEFAULT_BASELINE_DELAY_SEC = 0.5
+    DEFAULT_BASELINE_DELAY_SEC = 2.0
 
     def __init__(
         self,
@@ -436,6 +506,10 @@ def pick_batch_size(model_name: str) -> int:
         return 1200
     if "jina" in name_lower:
         return 8
+    if "qwen" in name_lower:
+        # Qwen3-Embedding loads with max_seq_length=8192; long-doc tasks (e.g. MLDR)
+        # OOM at batch=64. 8 keeps activation memory comfortably under 80GB.
+        return 8
     if "bge-m3" in name_lower or "snowflake" in name_lower:
         return 32
     if "gemma2" in name_lower:
@@ -465,8 +539,6 @@ def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: s
         f"in process {current_process().name}"
     )
 
-    task_objs = get_tasks(tasks=tasks, languages=["kor"])
-    evaluation = MTEB(tasks=task_objs)
     batch_size = pick_batch_size(model_name)
     logger.info(f"batch_size: {batch_size}")
 
@@ -475,7 +547,33 @@ def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: s
         encode_kwargs["precision"] = "binary"
 
     out = f"{output_dir}/{model_name}" + ("-quantized" if quantize else "")
-    evaluation.run(model, output_folder=out, encode_kwargs=encode_kwargs)
+
+    # Run tasks one by one so a single task failure (mteb metadata bug, missing
+    # config, dataset gone, etc.) does not abort the whole eval.
+    for task_name in tasks:
+        try:
+            task_objs = get_tasks(tasks=[task_name], languages=["kor"])
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[task] {task_name}: get_tasks failed: {e}")
+            continue
+        if not task_objs:
+            logger.error(f"[task] {task_name}: no matching task object — skipping.")
+            continue
+        try:
+            evaluation = MTEB(tasks=task_objs)
+            evaluation.run(
+                model,
+                output_folder=out,
+                encode_kwargs=encode_kwargs,
+                raise_error=False,
+            )
+            logger.info(f"[task] {task_name}: done.")
+        except Exception as e:  # noqa: BLE001
+            import traceback as _tb
+
+            logger.error(f"[task] {task_name}: failed and skipped: {e}")
+            _tb.print_exc()
+            continue
 
 
 def parse_csv(value: str) -> list[str]:
