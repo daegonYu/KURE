@@ -20,10 +20,11 @@
 
 ## 평가 모델
 
-비교 대상: **31개 모델** (upstage 제외). 회사/팀 정보와 핵심 특징만 요약했고, 상세 사양은 각 모델의 Hugging Face 카드를 참조하세요.
+비교 대상: **32개 모델** (upstage 제외). 회사/팀 정보와 핵심 특징만 요약했고, 상세 사양은 각 모델의 Hugging Face 카드를 참조하세요.
 
 | Model | 설명 |
 |---|---|
+| **Qwen/Qwen3-Embedding-8B** | (설명 미작성) |
 | **telepix/PIXIE-Rune-v1.0** | **TelePIX** PIXIE-Rune v1.0 임베딩. |
 | **telepix/PIXIE-Rune-Preview** | **TelePIX** PIXIE-Rune Preview (개발 중 버전). |
 | **dragonkue/snowflake-arctic-embed-l-v2.0-ko** | Hugging Face 사용자 **`dragonkue`**의 커뮤니티 fine-tune. Snowflake Arctic Embed L v2.0(XLM-R Large 기반)에 한국어 코퍼스로 추가 학습. 1024차원. |
@@ -62,8 +63,6 @@ Average 내림차순. 누락 셀(`—`)은 해당 (model, task) 평가 결과가
 
 | Model | LawIRKo | SQuADKorV1Retrieval | AutoRAGRetrieval | Ko-StrategyQA | PublicHealthQA | BelebeleRetrieval | MultiLongDocRetrieval | MIRACLRetrieval | MrTidyRetrieval | Average |
 |---|---|---|---|---|---|---|---|---|---|---|
-| telepix/PIXIE-Rune-v1.0 | 0.7698 | 0.9457 | 0.8966 | 0.8046 | 0.8398 | 0.9601 | 0.4231 | — | — | 0.8057 |
-| telepix/PIXIE-Rune-Preview | 0.7709 | 0.9466 | 0.9112 | 0.8083 | 0.8394 | 0.9526 | 0.4222 | 0.6673 | 0.5755 | 0.7660 |
 | dragonkue/snowflake-arctic-embed-l-v2.0-ko | 0.7735 | 0.9447 | 0.9093 | 0.8050 | 0.8337 | 0.9518 | 0.4150 | 0.6685 | 0.5712 | 0.7636 |
 | nlpai-lab/KURE-v1 | 0.7426 | 0.9357 | 0.8708 | 0.7999 | 0.8193 | 0.9502 | 0.4521 | 0.6816 | 0.5909 | 0.7603 |
 | telepix/PIXIE-Rune-v1.5 | 0.7705 | 0.9457 | 0.8927 | 0.8064 | 0.8426 | 0.9617 | 0.4340 | 0.6393 | 0.5492 | 0.7602 |

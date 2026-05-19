@@ -4,10 +4,13 @@ Unified table merging `eval/result_hf.md` (curated) and `eval/results/**/*.json`
 
 | Model | LawIRKo | SQuADKorV1Retrieval | AutoRAGRetrieval | Ko-StrategyQA | PublicHealthQA | BelebeleRetrieval | MultiLongDocRetrieval | MIRACLRetrieval | MrTidyRetrieval | Average |
 |---|---|---|---|---|---|---|---|---|---|---|
+| Qwen/Qwen3-Embedding-8B | 0.8171 | 0.9063 | 0.8276 | 0.8363 | 0.8721 | 0.9828 | 0.5036 | — | — | 0.8208 |
+| telepix/PIXIE-Rune-v1.0 | 0.7698 | 0.9457 | 0.8966 | 0.8046 | 0.8398 | 0.9601 | 0.4231 | 0.6400 | — | 0.7850 |
+| upstage/solar-embedding-1-large | 0.7557 | 0.9521 | 0.8833 | 0.8366 | 0.8787 | 0.9684 | 0.3850 | 0.6703 | 0.5766 | 0.7674 |
+| telepix/PIXIE-Rune-Preview | 0.7709 | 0.9466 | 0.9112 | 0.8083 | 0.8394 | 0.9526 | 0.4222 | 0.6673 | 0.5755 | 0.7660 |
 | dragonkue/snowflake-arctic-embed-l-v2.0-ko | 0.7735 | 0.9447 | 0.9093 | 0.8050 | 0.8337 | 0.9518 | 0.4150 | 0.6685 | 0.5712 | 0.7636 |
 | nlpai-lab/KURE-v1 | 0.7426 | 0.9357 | 0.8708 | 0.7999 | 0.8193 | 0.9502 | 0.4521 | 0.6816 | 0.5909 | 0.7603 |
 | telepix/PIXIE-Rune-v1.5 | 0.7705 | 0.9457 | 0.8927 | 0.8064 | 0.8426 | 0.9617 | 0.4340 | 0.6393 | 0.5492 | 0.7602 |
-| upstage/solar-embedding-1-large | 0.7557 | 0.9521 | 0.8833 | 0.8366 | 0.8787 | 0.9684 | 0.3203 | 0.6703 | 0.5766 | 0.7602 |
 | BAAI/bge-m3 | 0.7174 | 0.9038 | 0.8301 | 0.7941 | 0.8041 | 0.9316 | 0.4273 | 0.7015 | 0.6471 | 0.7508 |
 | dragonkue/multilingual-e5-small-ko | — | — | 0.8618 | 0.7617 | 0.7973 | 0.9297 | — | 0.6111 | 0.5113 | 0.7455 |
 | exp-models/dragonkue-KoEn-E5-Tiny | — | — | 0.8650 | 0.7598 | 0.7925 | 0.9302 | — | 0.6143 | 0.5033 | 0.7442 |

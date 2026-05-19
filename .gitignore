@@ -6,3 +6,48 @@ ex.ipynb
 .ipynb_checkpoints/
 *.log
 *.txt
+
+# === sionic-ai standard ignores (auto-managed) ===
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.virtualenv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Model weights / checkpoints  (kept on HuggingFace or weights server)
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+*.h5
+*.msgpack
+checkpoints/
+checkpoint-*/
+
+# Large data  (kept on HuggingFace Datasets)
+# NOTE: *.json / *.png are intentionally NOT ignored — small experiment
+# results & figures belong in git.
+*.parquet
+*.arrow
+*.feather
+*.npy
+*.npz
+*.jsonl.gz
+*.jsonl.zst
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# W&B auto-generated state (transient run dirs)
+wandb/
+# === end sionic-ai standard ignores ===

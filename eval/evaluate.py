@@ -133,8 +133,14 @@ class UpstageSolarEncoder(AbsEncoder):
     # Korean text is roughly 1.5 tokens per character (worst case for syllable
     # heavy Hangul). We pick conservative char budgets so a single text never
     # bumps the 4k-token wall and a packed batch stays under ~150k tokens.
-    DEFAULT_MAX_CHARS_PER_TEXT = 2000  # very conservative (<3k Korean tokens)
-    DEFAULT_MAX_CHARS_PER_BATCH = 30_000  # halved for MLDR long-doc traffic
+    # Push to the API's per-text cap (4000 tokens). 4000 chars covers most
+    # Korean text under that limit; rare-char outliers fall to the 400 handler
+    # which progressively shrinks 1/2 -> 1/4 -> ... and retries.
+    DEFAULT_MAX_CHARS_PER_TEXT = 4000
+    # Larger per-request budget reduces total request count for long-doc tasks
+    # like MLDR. Stays well under the API's 204,800-token request cap
+    # (~136K Korean chars worst case).
+    DEFAULT_MAX_CHARS_PER_BATCH = 80_000
     DEFAULT_MAX_TEXTS_PER_BATCH = 20  # reduced from 50 to ease 429s on MLDR
     # Baseline throttle to keep us under the per-key request rate limit so we
     # don't spend every second eating a 429+1s retry.
@@ -431,10 +437,15 @@ def build_model(model_name: str):
             "Given a web search query, retrieve relevant passages that answer the query"
         )
         model_prompts = {"query": f"Instruct: {task_description}\nQuery:"}
+        model_kwargs: dict[str, Any] = {"attn_implementation": "sdpa"}
+        # Qwen3-Embedding-8B: 32GB fp32 weights won't fit comfortably alongside
+        # 8k-seq activations on an 80GB GPU. Load in bf16.
+        if "qwen3-embedding-8b" in name_lower:
+            model_kwargs["torch_dtype"] = torch.bfloat16
         wrapper = SentenceTransformerEncoderWrapper(
             model=model_name,
             model_prompts=model_prompts,
-            model_kwargs={"attn_implementation": "sdpa"},
+            model_kwargs=model_kwargs,
             trust_remote_code=True,
         )
         if model_name == "SamilPwC-AXNode-GenAI/PwC-Embedding_expr":
@@ -506,6 +517,10 @@ def pick_batch_size(model_name: str) -> int:
         return 1200
     if "jina" in name_lower:
         return 8
+    if "qwen3-embedding-8b" in name_lower:
+        # 8B in bf16 leaves ~64GB for activations; batch=2 keeps O(seq^2) attention
+        # plus 8k-seq activations under that budget on an 80GB GPU.
+        return 2
     if "qwen" in name_lower:
         # Qwen3-Embedding loads with max_seq_length=8192; long-doc tasks (e.g. MLDR)
         # OOM at batch=64. 8 keeps activation memory comfortably under 80GB.
