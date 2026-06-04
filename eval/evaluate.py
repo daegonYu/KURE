@@ -32,13 +32,40 @@ from mteb.models.instruct_wrapper import instruct_wrapper
 from mteb.models.model_meta import ScoringFunction
 from mteb.models.sentence_transformer_wrapper import SentenceTransformerEncoderWrapper
 from mteb.types import PromptType
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, models as st_modules
 from sentence_transformers.models import StaticEmbedding
+
+
+# Local kozistr models live under HF-hub cache layout in /data. The two
+# `*_v1` / `*_v5` snapshots ship without sentence-transformers configs
+# (no modules.json / 1_Pooling), so they need an explicit CLS+Normalize
+# head. `ko_embed_v2` is a full sentence-transformers tree (CLS + Normalize)
+# and is loaded directly from its snapshot path.
+KOZISTR_LOCAL_SNAPSHOTS: dict[str, str] = {
+    "kozistr/ko_embed_v1": "/data/models--kozistr--ko_embed_v1/snapshots/03d8a7042464022cf8a81f35f7def1b17f6600ed",
+    "kozistr/ko_embed_v2": "/data/models--kozistr--ko_embed_v2/snapshots/b9ed28facafc46caec22d1b5d1178dd5235315d4",
+    "kozistr/multi-emb-unsup-v5": "/data/models--kozistr--multi-emb-unsup-v5/snapshots/f01cf0647bd0e69f4a55cdbcf713a58cfd11cdd7",
+}
+KOZISTR_NEEDS_MANUAL_HEAD = {
+    "kozistr/ko_embed_v1",
+    "kozistr/multi-emb-unsup-v5",
+}
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
+
+
+# On Blackwell (B300) + cuDNN 9.x with torch 2.11/cu128, the cuDNN SDPA backend
+# raises "cuDNN Frontend error: No valid execution plans built" at the attention
+# forward, breaking every encode (both KaLM-Gemma3 and nemotron-Llama hit it).
+# flash-attn isn't installed, so disable only the cuDNN SDPA backend and let
+# torch fall back to its built-in flash / mem-efficient SDPA kernels, which work
+# on this GPU. Harmless on non-CUDA / API paths.
+if torch.cuda.is_available():
+    torch.backends.cuda.enable_cudnn_sdp(False)
+    logger.info("Disabled cuDNN SDPA backend (B300/cuDNN9 workaround).")
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +136,50 @@ def _patch_belebele_loader() -> None:
 
 
 _patch_belebele_loader()
+
+
+# ---------------------------------------------------------------------------
+# transformers AutoProcessor text-tokenizer fallback patch
+# ---------------------------------------------------------------------------
+def _patch_autoprocessor_text_fallback() -> None:
+    # sentence-transformers v5's Transformer module unconditionally calls
+    # AutoProcessor.from_pretrained for every model. For text-only LLM embedders
+    # built on multimodal-capable architectures (e.g. KaLM-Embedding-Gemma3,
+    # whose config model_type is `gemma3_text`), transformers tries to assemble a
+    # multimodal processor and fails because the checkpoint ships no
+    # preprocessor_config.json:
+    #     OSError: Can't load image processor for '<model>' ...
+    # Such models only need a tokenizer. Wrap AutoProcessor.from_pretrained so
+    # that, on this failure, it falls back to AutoTokenizer. ST treats a
+    # PreTrainedTokenizerBase processor as a plain tokenizer (see Transformer
+    # .tokenizer property + tokenize()), which is exactly what a text embedder
+    # needs. Models with a valid processor are unaffected — the original call
+    # succeeds and the fallback never runs.
+    from transformers import AutoProcessor, AutoTokenizer
+
+    _orig_from_pretrained = AutoProcessor.from_pretrained
+
+    _TOKENIZER_KWARG_KEYS = {
+        "trust_remote_code", "model_max_length", "padding_side", "revision",
+        "use_fast", "token", "cache_dir", "subfolder",
+    }
+
+    def from_pretrained(pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return _orig_from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        except (OSError, ValueError) as exc:
+            tok_kwargs = {k: v for k, v in kwargs.items() if k in _TOKENIZER_KWARG_KEYS}
+            logger.warning(
+                f"AutoProcessor failed for {pretrained_model_name_or_path} "
+                f"({type(exc).__name__}: {exc}); falling back to AutoTokenizer."
+            )
+            return AutoTokenizer.from_pretrained(pretrained_model_name_or_path, **tok_kwargs)
+
+    AutoProcessor.from_pretrained = staticmethod(from_pretrained)
+    logger.info("Patched transformers.AutoProcessor.from_pretrained with text-tokenizer fallback.")
+
+
+_patch_autoprocessor_text_fallback()
 
 
 # ---------------------------------------------------------------------------
@@ -401,10 +472,104 @@ def build_model(model_name: str):
     """
     name_lower = model_name.lower()
 
+    # Local kozistr snapshots in /data (HF hub cache layout). v2 ships a full
+    # sentence-transformers tree; v1/v5 are bare HF checkpoints and need a
+    # manually-attached CLS + Normalize head (the trained pooling for both
+    # KoSimCSE-style RoBERTa and bge-m3 backbones).
+    if model_name in KOZISTR_LOCAL_SNAPSHOTS:
+        snapshot = KOZISTR_LOCAL_SNAPSHOTS[model_name]
+        if model_name in KOZISTR_NEEDS_MANUAL_HEAD:
+            logger.info(
+                f"Loading kozistr model with explicit CLS+Normalize head: "
+                f"{model_name} (snapshot={snapshot})"
+            )
+            transformer = st_modules.Transformer(
+                snapshot,
+                model_args={"attn_implementation": "sdpa"},
+            )
+            pooling = st_modules.Pooling(
+                transformer.get_word_embedding_dimension(),
+                pooling_mode="cls",
+            )
+            normalize = st_modules.Normalize()
+            st_model = SentenceTransformer(modules=[transformer, pooling, normalize])
+            return SentenceTransformerEncoderWrapper(model=st_model)
+
+        logger.info(f"Loading kozistr sentence-transformers model: {model_name} (snapshot={snapshot})")
+        return SentenceTransformerEncoderWrapper(
+            model=snapshot,
+            model_kwargs={"attn_implementation": "sdpa"},
+        )
+
     # upstage API models
     if name_lower.startswith("upstage/"):
         logger.info(f"Loading Upstage API encoder: {model_name}")
         return UpstageSolarEncoder(model_name=model_name)
+
+    # KaLM-Embedding (Gemma3 backbone): last-token-pooled LLM embedder with an
+    # instruct prefix on queries only. Its config ships empty `prompts`, so we
+    # inject KaLM's documented default retrieval prompt (queries) and leave
+    # documents unprefixed. Built-in lasttoken pooling + Normalize come from its
+    # sentence-transformers tree. 12B fp32 is heavy -> load bf16; the model's
+    # default max_seq_length is 131072, so we cap it to a retrieval-sane 8192.
+    if "kalm" in name_lower:
+        logger.info(f"Loading KaLM instruct-prefix model: {model_name}")
+        model_prompts = {
+            "query": "Instruct: Given a query, retrieve documents that answer the query \nQuery: ",
+            "document": "",
+        }
+        wrapper = SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa", "torch_dtype": torch.bfloat16},
+            trust_remote_code=True,
+        )
+        # README example uses 512, but we evaluate at 8192 to match nemotron and
+        # avoid truncating long-document tasks (e.g. MultiLongDocRetrieval).
+        wrapper.model.max_seq_length = 8192
+        return wrapper
+
+    # nvidia llama-embed-nemotron-8b: Llama bidirectional embedder (custom remote
+    # code). Ships built-in query/document prompts in config_sentence_transformers
+    # .json; we pass them explicitly to be safe. Mean pooling + Normalize from its
+    # ST tree. Load bf16 and cap the 131072 default max_seq_length to 8192.
+    if "nemotron" in name_lower:
+        logger.info(f"Loading nemotron embed model: {model_name}")
+        model_prompts = {
+            "query": "Instruct: Given a question, retrieve passages that answer the question\nQuery: ",
+            "document": "",
+        }
+        wrapper = SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa", "torch_dtype": torch.bfloat16},
+            tokenizer_kwargs={"padding_side": "left"},  # per nemotron README
+            trust_remote_code=True,
+        )
+        # nemotron README leaves max_seq_length at the model default (131072),
+        # which is impractical for benchmark corpora; cap at 8192 (covers the
+        # Korean retrieval passages comfortably).
+        wrapper.model.max_seq_length = 8192
+        return wrapper
+
+    # codefuse F2LLM (Qwen3 backbone): last-token-pooled LLM embedder. Native
+    # Qwen3 architecture (no remote code). Ships built-in query/document prompts
+    # in config_sentence_transformers.json; we pass them explicitly. lasttoken
+    # pooling + Normalize come from its ST tree. bf16, cap seq at 8192 to match
+    # the other LLM embedders.
+    if "f2llm" in name_lower:
+        logger.info(f"Loading F2LLM model: {model_name}")
+        model_prompts = {
+            "query": "Instruct: Given a question, retrieve passages that can help answer the question.\nQuery: ",
+            "document": "",
+        }
+        wrapper = SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa", "torch_dtype": torch.bfloat16},
+        )
+        wrapper.model.max_seq_length = 8192
+        return wrapper
 
     # model2vec static embeddings
     if "m2v" in name_lower:
@@ -429,6 +594,27 @@ def build_model(model_name: str):
             torch_dtype=torch.float16,
             normalized=True,
         )
+
+    # Qwen3-VL-Embedding (multimodal generative backbone) used TEXT-ONLY for
+    # retrieval. Loads via its sentence-transformers tree + custom qwen3_vl module
+    # (trust_remote_code). Per the model card the instruction is applied as a
+    # system prompt and is customizable per call; for retrieval we set a retrieval
+    # instruction on queries and leave documents on the model's default
+    # ("Represent the user's input."). Must precede the generic "qwen" branch.
+    if "qwen3-vl" in name_lower:
+        logger.info(f"Loading Qwen3-VL-Embedding (text-only) model: {model_name}")
+        model_prompts = {
+            "query": "Retrieve relevant documents for the query.",
+            "document": "Represent the user's input.",
+        }
+        wrapper = SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa", "torch_dtype": torch.bfloat16},
+            trust_remote_code=True,
+        )
+        wrapper.model.max_seq_length = 8192
+        return wrapper
 
     # qwen3-embedding / PwC: explicit instruct prefix on queries only
     if "qwen" in name_lower or model_name == "SamilPwC-AXNode-GenAI/PwC-Embedding_expr":
@@ -516,6 +702,16 @@ def pick_batch_size(model_name: str) -> int:
     ):
         return 1200
     if "jina" in name_lower:
+        return 8
+    if "kalm" in name_lower:
+        # 12B in bf16 with 8k-seq last-token pooling. Small batch keeps long-doc
+        # tasks (MLDR/MIRACL) within memory.
+        return 4
+    if "nemotron" in name_lower:
+        # 8B bidirectional in bf16 at 8k-seq.
+        return 8
+    if "f2llm" in name_lower:
+        # 8B Qwen3 last-token embedder in bf16 at 8k-seq.
         return 8
     if "qwen3-embedding-8b" in name_lower:
         # 8B in bf16 leaves ~64GB for activations; batch=2 keeps O(seq^2) attention

@@ -5,8 +5,10 @@
 #   ./eval.sh [CUDA_NUM] [PROFILE]
 #     CUDA_NUM: GPU id to bind (default: 3). Ignored for upstage profile.
 #     PROFILE : which model/task bundle to run.
-#               - default : Korean retrieval models on LawIRKo + SQuADKorV1Retrieval
-#               - upstage : Upstage Solar embedding API on the 9 Korean retrieval tasks
+#               - default  : Korean retrieval models on LawIRKo + SQuADKorV1Retrieval
+#               - upstage  : Upstage Solar embedding API on the 9 Korean retrieval tasks
+#               - llm_embed: KaLM Gemma3-12B + nemotron-8b on the 9 tasks
+#                            (MultiLongDocRetrieval instead of XPQARetrieval)
 #
 # Examples:
 #   ./eval.sh 0 default
@@ -43,8 +45,16 @@ dragonkue/snowflake-arctic-embed-l-v2.0-ko"
     # Order: small datasets first so we get partial results quickly.
     TASKS="LawIRKo,SQuADKorV1Retrieval,AutoRAGRetrieval,Ko-StrategyQA,PublicHealthQA,BelebeleRetrieval,XPQARetrieval,MIRACLRetrieval,MrTidyRetrieval"
     ;;
+  llm_embed)
+    # Large LLM-based embedders (KaLM Gemma3-12B last-token, nemotron-8b Llama
+    # bidirectional) on the 9 Korean retrieval tasks, with MultiLongDocRetrieval
+    # swapped in for XPQARetrieval. Small datasets first for quick partials.
+    MODELS="tencent/KaLM-Embedding-Gemma3-12B-2511,\
+nvidia/llama-embed-nemotron-8b"
+    TASKS="LawIRKo,SQuADKorV1Retrieval,AutoRAGRetrieval,Ko-StrategyQA,PublicHealthQA,BelebeleRetrieval,MultiLongDocRetrieval,MIRACLRetrieval,MrTidyRetrieval"
+    ;;
   *)
-    echo "Unknown profile: ${PROFILE}. Available: default, upstage" >&2
+    echo "Unknown profile: ${PROFILE}. Available: default, upstage, llm_embed" >&2
     exit 1
     ;;
 esac
