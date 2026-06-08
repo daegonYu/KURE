@@ -14,10 +14,12 @@ Unified table merging `eval/result_hf.md` (curated) and `eval/results/**/*.json`
 | telepix/PIXIE-Rune-v1.5 | 0.7705 | 0.9457 | 0.8927 | 0.8064 | 0.8426 | 0.9617 | 0.4340 | 0.6393 | 0.5492 | 0.7602 |
 | codefuse-ai/F2LLM-v2-14B | 0.8625 | 0.8879 | 0.7440 | 0.8431 | 0.9247 | 0.9509 | 0.3945 | 0.6056 | 0.6260 | 0.7599 |
 | telepix/PIXIE-Rune-v1.0 | 0.7698 | 0.9457 | 0.8966 | 0.8046 | 0.8398 | 0.9601 | 0.4231 | 0.6400 | 0.5519 | 0.7591 |
+| nvidia/llama-nemotron-embed-vl-1b-v2 (msl8192) | 0.7513 | 0.9360 | 0.8773 | 0.8084 | 0.8223 | 0.9584 | 0.3704 | 0.6975 | 0.5998 | 0.7579 |
 | Qwen/Qwen3-VL-Embedding-8B | 0.7665 | 0.8923 | 0.8347 | 0.8297 | 0.8776 | 0.9607 | 0.4211 | 0.6379 | 0.5727 | 0.7548 |
 | BAAI/bge-m3 | 0.7174 | 0.9038 | 0.8301 | 0.7941 | 0.8041 | 0.9316 | 0.4273 | 0.7015 | 0.6471 | 0.7508 |
 | codefuse-ai/F2LLM-v2-4B | 0.8308 | 0.8813 | 0.7367 | 0.8357 | 0.9152 | 0.9377 | 0.4067 | 0.5879 | 0.6075 | 0.7488 |
 | dragonkue/multilingual-e5-small-ko | — | — | 0.8618 | 0.7617 | 0.7973 | 0.9297 | — | 0.6111 | 0.5113 | 0.7455 |
+| en_ja_break_bench_data_v2_wkl8b_kl_only_tau005_bs256_lr1e-5 (ckpt-748, msl8192) | 0.7937 | 0.9055 | 0.8325 | 0.8043 | 0.8403 | 0.9465 | 0.3600 | 0.6498 | 0.5690 | 0.7446 |
 | exp-models/dragonkue-KoEn-E5-Tiny | — | — | 0.8650 | 0.7598 | 0.7925 | 0.9302 | — | 0.6143 | 0.5033 | 0.7442 |
 | Snowflake/snowflake-arctic-embed-l-v2.0 | 0.7578 | 0.9121 | 0.8386 | 0.8045 | 0.8168 | 0.9271 | 0.3688 | 0.6608 | 0.5907 | 0.7419 |
 | kozistr/multi-emb-unsup-v5 | 0.5823 | 0.6551 | 0.7226 | 0.7460 | 0.8093 | 0.9055 | — | — | — | 0.7368 |
@@ -52,5 +54,9 @@ Unified table merging `eval/result_hf.md` (curated) and `eval/results/**/*.json`
 | sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | — | — | 0.4230 | 0.4590 | 0.6741 | 0.7149 | — | 0.2568 | 0.1272 | 0.4425 |
 
 Notes: NDCG@10 only. MultiLongDocRetrieval uses the `ko` subset (test split). Multilingual tasks select a Korean subset (e.g. `kor_Hang-kor_Hang` for BelebeleRetrieval). Average is over available cells only.
+
+`en_ja_break_bench_data_v2_wkl8b_kl_only_tau005_bs256_lr1e-5 (ckpt-748, msl8192)` 행: Snowflake arctic-embed-l-v2.0 기반 EN-JA fine-tune(KL distill, τ=0.05). 위 9개 task(XPQA 대신 MultiLongDoc)를 `--max_seq_length 8192`로 평가. 출처 JSON은 `eval/results_wkl8b_msl8192/`(다른 행은 `eval/results/`). query prefix `query: ` 적용.
+
+`nvidia/llama-nemotron-embed-vl-1b-v2 (msl8192)` 행: NVIDIA의 VL(멀티모달) 1B 임베더를 **텍스트 전용**으로 평가(custom `llama_nemotron_vl` arch, dim 2048). 빌트인 e5 스타일 prefix `query: `/`passage: ` 적용, `max_seq_length=8192`, 동일 9개 task(XPQA 대신 MultiLongDoc). 출처 JSON은 `eval/results_nemotron_vl_1b_msl8192/`. ⚠️ 이름에 `nemotron`이 들어가지만 instruct-prompt 기반 `nvidia/llama-embed-nemotron-8b`(50행)와는 다른 모델·다른 prompt 체계임.
 
 신규 평가 11개 모델 (모두 9개 task 완료): `tencent/KaLM-Embedding-Gemma3-12B-2511`, `Qwen/Qwen3-Embedding-0.6B`·`-4B`, `Qwen/Qwen3-VL-Embedding-2B`·`-8B`, `codefuse-ai/F2LLM-v2-0.6B`·`-1.7B`·`-4B`·`-8B`·`-14B`, `nvidia/llama-embed-nemotron-8b`. 공통 설정: bf16, `max_seq_length=8192`, attention=sdpa(B300에서 torch 네이티브 flash 백엔드; cuDNN 백엔드는 비활성화). Qwen3-VL-Embedding은 멀티모달이나 텍스트 전용으로 사용(torchvision 설치), retrieval query prompt는 model card 기반 추정값(`"Retrieve relevant documents for the query."`). ⚠️ `nvidia/llama-embed-nemotron-8b` 결과는 신뢰도 낮음(재평가 보류). 저점수(LawIRKo 0.42, MIRACL 0.20, MrTidy 0.15)의 원인을 진단한 결과, mean pooling·left padding·prompt는 모두 정상이며 **transformers 버전 불일치**가 원인으로 확인됨: 이 모델은 커스텀 bidirectional Llama로 README·mteb 모두 `transformers==4.51.0`을 필수로 명시하나, 본 평가는 `transformers 5.9.0`에서 수행됨 → 5.x의 바뀐 attention 인터페이스에서 bidirectional mask가 잘못 적용됨(증거: README published 예제 `[[0.377, 0.058]]` 미재현, eager `[[0.510, 0.367]]`·sdpa `[[0.282, 0.017]]`로 attn별 결과가 크게 달라짐). 올바른 값은 `transformers==4.51.0` 격리 환경에서 재평가 필요.

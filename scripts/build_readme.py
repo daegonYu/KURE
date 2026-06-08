@@ -98,7 +98,15 @@ MODEL_DESCRIPTIONS: dict[str, str] = {
         "Hugging Face 사용자 **`jhgan`**의 한국어 SBERT/RoBERTa multitask 모델.",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2":
         "**UKP Lab / sentence-transformers 커뮤니티** Multilingual MiniLM-L12 v2. 경량 multilingual SBERT.",
+    "nvidia/llama-nemotron-embed-vl-1b-v2":
+        "**NVIDIA** llama-nemotron VL 1B v2. 멀티모달(VL) 임베더를 텍스트 전용으로 평가. 빌트인 e5 스타일 `query: `/`passage: ` prefix, max_seq_length=8192, dim 2048.",
+    "local/en_ja_break_bench_data_v2_wkl8b_kl_only_tau005_bs256_lr1e-5":
+        "**(내부 실험)** Snowflake Arctic Embed L v2.0 기반 EN-JA fine-tune (KL distill, τ=0.05, checkpoint-748). max_seq_length=8192로 평가.",
 }
+
+# README에서 제외할 모델 (exact id) / 제외할 org prefix.
+SKIP_MODELS: set[str] = {"telepix/PIXIE-Rune-Preview"}
+SKIP_ORG_PREFIXES: tuple[str, ...] = ("upstage/", "kozistr/")
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +203,12 @@ def main() -> None:
     fs = discover_models()
     fs_index = {mid: mdir for mid, mdir in fs}
     all_models = sorted(set(curated.keys()) | set(fs_index.keys()))
-    # Drop upstage just in case
-    all_models = [m for m in all_models if not m.startswith("upstage/")]
+    # Drop upstage + explicitly excluded models / orgs (see SKIP_* above).
+    all_models = [
+        m
+        for m in all_models
+        if m not in SKIP_MODELS and not m.startswith(SKIP_ORG_PREFIXES)
+    ]
 
     rows = []
     for mid in all_models:

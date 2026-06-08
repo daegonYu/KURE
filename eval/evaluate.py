@@ -462,7 +462,7 @@ class UpstageSolarEncoder(AbsEncoder):
 # ---------------------------------------------------------------------------
 # Per-model loader: rely on each model's built-in prompts when available
 # ---------------------------------------------------------------------------
-def build_model(model_name: str):
+def build_model(model_name: str, max_seq_length: int | None = None):
     """Return an MTEB-compatible encoder for the given model id.
 
     Models with built-in `prompts` (set in their config_sentence_transformers.json)
@@ -526,6 +526,23 @@ def build_model(model_name: str):
         )
         # README example uses 512, but we evaluate at 8192 to match nemotron and
         # avoid truncating long-document tasks (e.g. MultiLongDocRetrieval).
+        wrapper.model.max_seq_length = 8192
+        return wrapper
+
+    # nvidia llama-nemotron-embed-vl-1b-v2: multimodal (VL) embedder used TEXT-ONLY
+    # for retrieval. Custom `llama_nemotron_vl` arch (remote code). Unlike the
+    # llama-embed-nemotron-8b below, it ships e5-style prefixes (`query: ` /
+    # `passage: `) in config_sentence_transformers.json — NOT an instruct prompt —
+    # so it needs its own handling and must precede the generic "nemotron" match.
+    if "nemotron-embed-vl" in name_lower or "nemotron-vl" in name_lower:
+        logger.info(f"Loading nemotron-VL (text-only) model: {model_name}")
+        model_prompts = {"query": "query: ", "document": "passage: "}
+        wrapper = SentenceTransformerEncoderWrapper(
+            model=model_name,
+            model_prompts=model_prompts,
+            model_kwargs={"attn_implementation": "sdpa", "torch_dtype": torch.bfloat16},
+            trust_remote_code=True,
+        )
         wrapper.model.max_seq_length = 8192
         return wrapper
 
@@ -682,11 +699,18 @@ def build_model(model_name: str):
 
     # Default: load the model and let mteb auto-pick built-in prompts.
     logger.info(f"Loading sentence-transformer with built-in prompts: {model_name}")
-    return SentenceTransformerEncoderWrapper(
+    wrapper = SentenceTransformerEncoderWrapper(
         model=model_name,
         model_kwargs={"attn_implementation": "sdpa"},
         trust_remote_code=True,
     )
+    # Optional override of the model's own max_seq_length (e.g. raise the
+    # checkpoint default to 8192 for long-document tasks). When None, keep the
+    # model's built-in default.
+    if max_seq_length is not None:
+        wrapper.model.max_seq_length = max_seq_length
+        logger.info(f"Overriding max_seq_length -> {max_seq_length}")
+    return wrapper
 
 
 def pick_batch_size(model_name: str) -> int:
@@ -733,7 +757,7 @@ def pick_batch_size(model_name: str) -> int:
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
-def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: str, quantize: bool):
+def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: str, quantize: bool, max_seq_length: int | None = None):
     if model_name.startswith("upstage/"):
         # API-based encoder: hide GPUs entirely so mteb's similarity ops use CPU.
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -743,7 +767,7 @@ def evaluate_model(model_name: str, gpu_id: int, tasks: list[str], output_dir: s
         if torch.cuda.device_count() > 0:
             torch.cuda.set_device(0)
 
-    model = build_model(model_name)
+    model = build_model(model_name, max_seq_length=max_seq_length)
     setproctitle(f"{model_name}-{gpu_id}")
     logger.info(
         f"Running tasks={tasks} model={model_name} on GPU {gpu_id} "
@@ -808,6 +832,12 @@ def main():
     parser.add_argument("--gpu", type=int, default=0, help="GPU number to use.")
     parser.add_argument("--quantize", action="store_true", help="Use binary quantization.")
     parser.add_argument(
+        "--max_seq_length",
+        type=int,
+        default=None,
+        help="Override model max_seq_length (default: use the model's own).",
+    )
+    parser.add_argument(
         "--output_dir", type=str, default="results", help="Output folder for results."
     )
     args = parser.parse_args()
@@ -827,7 +857,7 @@ def main():
     with Pool(processes=1) as pool:
         pool.starmap(
             evaluate_model,
-            [(m, args.gpu, tasks, args.output_dir, args.quantize) for m in models],
+            [(m, args.gpu, tasks, args.output_dir, args.quantize, args.max_seq_length) for m in models],
         )
 
 
